@@ -43,13 +43,19 @@ with home_placeholder.container():
             csv_files, 
             index=0  # por defecto ESP35 5min
         )
-
     with col2:
         selected_freq = st.selectbox(
             "Temporalidad:",
             options=["1min", "5min", "15min", "30min", "1h", "1D"],
             index=1  # por defecto 5min
         )
+
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        start_time_permitido = st.time_input("Hora de apertura diario: ", value=dt.time(13, 30, 0))
+    with col2:
+        end_time_permitido = st.time_input("Hora de cierre diario: ", value=dt.time(20, 0, 0))
 
     # Cargar archivo seleccionado
     if selected_file:
@@ -73,60 +79,51 @@ with home_placeholder.container():
         # Selección de fechas desde el frontend 
         col1, col2 = st.columns(2)
 
+        # Intervalo total
         with col1:
-            subcol1, subcol2 = col1.columns([2, 1])
-
-            with subcol1:      
-                start_date_training = st.date_input("Inicio entrenamiento", value=dt.date(2025, 3, 3))
-                start_date_test = st.date_input("Inicio test", value=dt.date(2025, 3, 4))
-
-            with subcol2:  
-                start_time_training = st.time_input("Hora training i", value=dt.time(8, 0, 0), label_visibility="hidden")
-                start_time_test = st.time_input("Hora test i", value=dt.time(8, 0, 0), label_visibility="hidden")
+            start_datetime = st.date_input("Fecha de inicio: ", value=dt.datetime(2025, 3, 10, 0, 0, 0))
 
         with col2:
-            subcol1, subcol2 = col2.columns([2, 1])
+            end_datetime = st.date_input("Fecha de fin: ", value=dt.datetime(2025, 3, 12, 0, 0, 0))
 
-            with subcol1: 
-                end_date_training = st.date_input("Fin entrenamiento", value=dt.date(2025, 3, 3))
-                end_date_test = st.date_input("Fin test", value=dt.date(2025, 3, 4))
+        # Porcentaje de entrenamiento
+        train_percentage = st.slider("Porcentaje de datos para entrenamiento", min_value=50, max_value=90, value=70, step=10)
 
-            with subcol2: 
-                end_time_training = st.time_input("Hora training f", value=dt.time(17, 0, 0), label_visibility="hidden")
-                end_time_test = st.time_input("Hora test f", value=dt.time(17, 0, 0), label_visibility="hidden")
+        # Filtrar fechas
+        data = data_loader.get_filtered_data(start_datetime, end_datetime)
 
-        start_training = dt.datetime.combine(start_date_training, start_time_training)
-        end_training = dt.datetime.combine(end_date_training, end_time_training)
-
-        start_test = dt.datetime.combine(start_date_test, start_time_test)
-        end_test = dt.datetime.combine(end_date_test, end_time_test)
+        # Calcular el punto de corte
+        data_daily = data.between_time(start_time_permitido, end_time_permitido)
+        cutoff_idx = int(len(data_daily) * (train_percentage / 100))
 
         # Cargar datos filtrados
-        try:
-            training_data = data_loader.get_filtered_data(start_training, end_training)
-            test_data = data_loader.get_filtered_data(start_test, end_test)
+        training_data = data_daily.iloc[:cutoff_idx]
+        test_data = data_daily.iloc[cutoff_idx:]
 
-            st.subheader(f"Datos de entrenamiento: {len(training_data)} puntos")
-            st.dataframe(training_data.head()["<CLOSE>"])
+        st.subheader(f"Datos de entrenamiento: {len(training_data)} puntos")
+        st.dataframe(training_data.head()["<CLOSE>"])
 
-            st.subheader(f"Datos de test: {len(test_data)} puntos")
-            st.dataframe(test_data.head()["<CLOSE>"])
+        st.subheader(f"Datos de test: {len(test_data)} puntos")
+        st.dataframe(test_data.head()["<CLOSE>"])
 
-        except Exception as e:
-            st.error(f"Error al filtrar las fechas: {e}")
+        data_daily = data.between_time(start_time_permitido, end_time_permitido)
 
-        flags = get_flags_from_strategy(estrategia)
+        if(len(data_daily) < 100):
+            st.error("Se necesitan al menos 50 puntos para la simulación")
+        else:
+            flags = get_flags_from_strategy(estrategia)
 
-        st.session_state.capital_por_operacion = capital_por_operacion
-        st.session_state.selected_strategy = estrategia
-        st.session_state.training_data = training_data
-        st.session_state.test_data = test_data
-        st.session_state.flags = flags
+            st.session_state.capital_por_operacion = capital_por_operacion
+            st.session_state.selected_strategy = estrategia
+            st.session_state.training_data = training_data
+            st.session_state.test_data = test_data
+            st.session_state.horario_permitido = (start_time_permitido.strftime("%H:%M"), end_time_permitido.strftime("%H:%M"))
+            st.session_state.flags = flags
 
-        st.session_state.current_view = "simulation"
-        st.session_state.simulando = True
+            st.session_state.current_view = "simulation"
+            st.session_state.simulando = True
 
-        st.page_link("views/simulationView.py", label="Simular estrategia")
+            st.page_link("views/simulationView.py", label="Simular estrategia")
 
         
             

@@ -103,7 +103,7 @@ class Indicators:
             data.loc[data.index[i], 'RSI'] = 100 - (100 / (1 + rs_i))
 
     @staticmethod
-    def optimize_rsi(data, progress_callback, window_range=range(9, 15), horizon=3):
+    def optimize_rsi(data, progress_callback, window_range=range(10, 16), horizon=3):
         best_window = None
         max_score = float('-inf')
         total = len(window_range)
