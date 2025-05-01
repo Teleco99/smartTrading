@@ -67,7 +67,7 @@ symbol = SYMBOL_MAP[selection]
 timeframe = st.selectbox(
     "Temporalidad",
     options=["1m", "5m", "15m", "30m", "1h", "1d"], 
-    index=0
+    index=1
 )
 
 # Seleccionar mes (opciones predefinidas)

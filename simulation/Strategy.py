@@ -1,11 +1,12 @@
-from datetime import time
+from datetime import datetime
 
 import pandas as pd
 
 class Strategy:
-    def __init__(self, arima_order=(1, 1, 1), capital_por_operacion=100):
+    def __init__(self, capital_por_operacion=100, horario_permitido=('08:00', '17:00')):
         # Capital fijo invertido por operación
         self.capital_por_operacion = capital_por_operacion
+        self.horario_permitido = horario_permitido
         self.largo_abierta = False  # Solo operaciones largas
 
     def generate_rsi_signals(self, data):
@@ -94,7 +95,7 @@ class Strategy:
             raise ValueError("Falta la columna 'Prediction'.")
 
         for i in range(1, len(data) - horizon - 1):
-            slope = data['Prediction'].iloc[i + horizon] - data['<CLOSE>'].iloc[i]
+            slope = data['Prediction'].iloc[i + horizon] - data['Prediction'].iloc[i]
             min_slope = data['<CLOSE>'].iloc[i] * spread
 
             rsi_prev = data['RSI'].iloc[i - 1]
@@ -123,7 +124,7 @@ class Strategy:
             raise ValueError("Falta la columna 'Prediction'.")
 
         for i in range(1, len(data) - horizon - 1):
-            slope = data['Prediction'].iloc[i + horizon] - data['<CLOSE>'].iloc[i]
+            slope = data['Prediction'].iloc[i + horizon] - data['Prediction'].iloc[i]
             min_slope = data['<CLOSE>'].iloc[i] * spread
 
             macd_now = data['MACD'].iloc[i]
@@ -155,7 +156,7 @@ class Strategy:
             raise ValueError("Falta la columna 'Prediction'.")
 
         for i in range(1, len(data) - horizon - 1):
-            slope = data['Prediction'].iloc[i + horizon] - data['<CLOSE>'].iloc[i]
+            slope = data['Prediction'].iloc[i + horizon] - data['Prediction'].iloc[i]
             min_slope = data['<CLOSE>'].iloc[i] * spread
 
             rsi_prev = data['RSI'].iloc[i - 1]
@@ -182,7 +183,7 @@ class Strategy:
 
         return signals
 
-    def apply_strategy(self, data, signals, max_operaciones_abiertas=2, horario_permitido=(time(9, 0), time(20, 00))):
+    def apply_strategy(self, data, signals, max_operaciones_abiertas=5):
         '''Simula operaciones largas múltiples según señales, ejecutando en el siguiente precio disponible.'''
 
         operaciones = []
@@ -192,12 +193,16 @@ class Strategy:
 
         condicion_abierta = False
 
+        horario_permitido = self.horario_permitido
+
         for i in range(1, len(data) - 1):  # evitamos el último índice para poder usar i+1
             señal = signals['Signal'].iloc[i]
 
             # Verificar horario de la señal
             hora_actual = data.index[i].time()
             hora_inicio, hora_fin = horario_permitido
+            hora_inicio = datetime.strptime(hora_inicio, '%H:%M').time()
+            hora_fin = datetime.strptime(hora_fin, '%H:%M').time()
 
             if not (hora_inicio <= hora_actual <= hora_fin):
                 continue  # no operamos fuera de horario

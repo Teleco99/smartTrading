@@ -13,109 +13,135 @@ class MultiOutputRegression:
         self.horizon = horizon  # Horizonte de predicción (número de valores futuros)
         self.model = MultiOutputRegressor(base_model)  # Modelo multioutput
 
-    def prepare_data(self, data):
-        '''Prepara los datos para el entrenamiento y la predicción generando las ventanas.'''
-        X, y = [], []
+    def train(self, X_data, y_data):
+        '''Entrena el modelo con ventanas de entradas y salidas dadas.'''
 
-        rango = len(data) - self.window - self.horizon
-
-        if rango <= 0:
-            print("❌ No hay suficientes datos para esta configuración.")
-            return
-
-        for i in range(rango):
-            X.append(data[i:i+self.window])  # Ventana de entrada
-            y.append(data[i+self.window:i+self.window+self.horizon])  # Valores futuros
-        
-        return np.array(X), np.array(y)
-
-    def train(self, data):
-        '''Entrena el modelo con la serie temporal dada.'''
-
-        X, y = self.prepare_data(data)
-
-        if len(X) > 0:
-            self.model.fit(X, y)
+        if len(X_data) > 0:
+            self.model.fit(X_data, y_data)
         else:
             print("❌ Datos insuficientes después de procesar las ventanas.")
 
-    def predict(self, windows):
-        '''Predice los próximos "horizon" valores usando las ventanas de entrada.'''
+    def predict(self, window):
+        '''Predice los próximos "horizon" valores usando la ventana de entrada.'''
         predictions = []
         
-        for window in windows:
-            if len(window) != self.window:
-                raise ValueError(f"Se esperaba una ventana de tamaño {self.window}, pero se recibió {len(window)}")
+        if len(window) != self.window:
+            raise ValueError(f"Se esperaba una ventana de tamaño {self.window}, pero se recibió {len(window)}")
             
-            # Asegurar que la ventana esté en el formato correcto para el modelo
-            window = np.array(window).reshape(1, -1)  # Convertir la ventana en array 2D
+        # Asegurar que la ventana esté en el formato correcto para el modelo
+        window = np.array(window).reshape(1, -1)  # Convertir la ventana en array 2D
             
-            # Obtener las predicciones para esta ventana
-            prediction = self.model.predict(window)
+        # Obtener las predicciones para esta ventana
+        prediction = self.model.predict(window)
 
-            # Añadir las predicciones a la lista
-            predictions.append(prediction.flatten())  # Hacer que sea un vector plano de predicciones
+        # Añadir las predicciones a la lista
+        predictions.append(prediction.flatten())  # Hacer que sea un vector plano de predicciones
         
         return np.array(predictions)  # Retorna un array de arrays de predicciones
     
     @staticmethod
-    def optimize_window(data, progress_callback, window_range=range(16, 65, 16), horizon=3):
-        '''Optimiza el parámetro window evaluando rolling forecasts sobre el training data.'''
+    def prepare_data(data, window, horizon=3):
+        '''Prepara los datos para el entrenamiento y la predicción generando las ventanas.'''
+        X, y = [], []
+
+        for i in range(len(data) - window - horizon + 1):
+            X.append(data[i : i + window])  # Ventana de entrada
+            y.append(data[i + window : i + window + horizon])  # Valores futuros
+        
+        return np.array(X), np.array(y)
+
+    @staticmethod
+    def optimize(data, progress_callback, buffer_sizes=[10, 20], window_range=[8, 16], horizon=3):
+        '''Optimiza el parámetro window evaluando rolling forecasts sobre training/validation split.'''
         best_score = float('inf')
-        best_window = None
-        results = []
+        best_params = {}
 
         completed = 0
-        total = len(window_range)
-        
-        # Para no saturar al sistema con la optimización, se usan máximo los ultimos 200 datos
+        total = len(window_range) * len(buffer_sizes)
+
+        # Para no saturar: usar máximo 100 datos
         data_array = data['<CLOSE>'].values[-200:]
 
+        # Split en entrenamiento y validación
+        split_idx = int(len(data_array) * 0.7)
+        train_data = data_array[split_idx:]
+        val_data = data_array[:split_idx]
+
         for window in window_range:
-            try:
-                errors = []
-
-                for i in range(0, len(data_array) - window - horizon):
-                    # Datos para entrenamiento: desde el inicio hasta la ventana actual  
-                    if i % 10 == 0:
-                        progress_callback(completed / total, f"🔎 Optimizando regresión: Probando ventana {window}: {i} de {len(data_array)} datos")
-
-                    train_slice = data_array[i : i + window]
-                    future_slice = data_array[i + window : i + window + horizon]
-
-                    if len(future_slice) < horizon:
+            for buffer in buffer_sizes:
+                    if len(train_data) < window + horizon:
                         continue
 
                     model = MultiOutputRegression(window=window, horizon=horizon)
-                    model.train(pd.Series(data_array))
 
-                    # Predice solo el siguiente conjunto futuro
-                    pred = model.predict([train_slice])[0]
+                    X_val, y_val = MultiOutputRegression.prepare_data(data=val_data, window=window)
 
-                    em = ErrorMetrics(actual_values=[future_slice[-1]], predicted_values=[pred[-1]])
-                    errors.append(em.rmse())
+                    y_pred_list = []
+                    y_test_list = []
 
-                if not errors:
-                    continue
+                    # Validar en validation pero empezando desde los ultimos training
+                    for i in range(len(X_val)):
+                        if i % 10 == 0:
+                            progress_callback(completed / total, f"🔎 Optimizando regresión: Window {window}: {i}/{len(X_val)}")
 
-                avg_rmse = np.mean(errors)
-                results.append((window, avg_rmse))
+                        # Número real de puntos a coger
+                        train_size = window + buffer
 
-                if avg_rmse < best_score:
-                    best_score = avg_rmse
-                    best_window = window
+                        # Coger últimos puntos de training + inicio de test
+                        train_window = train_data[-train_size:]
+                        val_window = val_data[:i + 1]
 
-                completed += 1
-                progress_callback(completed / total)
+                        # Concatenarlos
+                        current_data = np.concatenate([train_window, val_window])
 
-                # Depuración: mostrar cada combinación
-                print(f"Regresion probada: window={window}, avg_rmse={avg_rmse:.4}")
+                        # Entrenamiento solo con datos anteriores al objetivo   
+                        train_data = current_data[:-(horizon)]
 
-            except Exception as e:
-                import traceback
-                print(f"❌ Error con window={window}")
-                traceback.print_exc()
-                continue
+                        # Preparar entradas (ventanas) sobre esos datos
+                        X_train, y_train = MultiOutputRegression.prepare_data(data=train_data, window=window)
 
-        print(f"🟢 Mejor Regresión Lineal: window={best_window} con RMSE = {best_score:.4f}")
-        return best_window
+                        # Entrenar
+                        model.train(X_train, y_train)
+
+                        # Preparar ventana para predicción del siguiente valor
+                        last_input = current_data[-(window + horizon) : -horizon]  # Última ventana de entrada
+                        y_true = current_data[-1]
+                                
+                        y_pred = model.predict(last_input)
+                        y_pred_real = y_pred[0, -1]
+
+                        # Guardar resultados
+                        y_pred_list.append(y_pred_real)
+                        y_test_list.append(y_true)
+
+                        if i == 0:
+                            print(f"  Optimizando modelo...")
+                            print(f"  Reentrenado con muestra {i}")
+                            print(f"  📈 last_input: {last_input}")
+                            print(f"  🎯 y_true (valor real actual): {y_true}")
+                            print(f"  🤖 y_pred completo: {y_pred}")
+                            print(f"  🏁 y_pred_real (último valor predicho): {y_pred_real}")
+                            print("-" * 40)
+
+                    if y_pred_list and y_test_list:
+                        error_metrics = ErrorMetrics(y_test_list, y_pred_list)
+                        avg_rmse = error_metrics.rmse()
+
+                        if avg_rmse < best_score:
+                            best_score = avg_rmse
+                            best_params = {
+                                'buffer': buffer,
+                                'window': window,
+                            }
+
+                        print(f"✅ Regresión Lineal probada: window={window}, buffer={buffer}, avg_rmse={avg_rmse:.4f}")
+                    else:
+                        avg_rmse = float('inf')
+                        print(f"❌ Regresión Lineal sin suficientes puntos: Window {window}, buffer={buffer}, avg_rmse={avg_rmse:.4f}")
+
+                    completed += 1
+                    progress_callback(completed / total)
+
+        print(f'🟢 Mejores parámetros: {best_params}')
+
+        return best_params

@@ -24,11 +24,12 @@ with placeholder.container():
             st.stop()
 
     capital_por_operacion = st.session_state.capital_por_operacion
+    horario_permitido = st.session_state.horario_permitido
     training_data = st.session_state.training_data
-    test_data = st.session_state.test_data.copy()
+    test_data = st.session_state.test_data
     flags = st.session_state.flags
 
-    simulation = Simulation(capital_por_operacion=capital_por_operacion, training_data=training_data, test_data=test_data)
+    simulation = Simulation(capital_por_operacion=capital_por_operacion, training_data=training_data, test_data=test_data, horario_permitido=horario_permitido)
 
     if st.session_state.get("simulando", False):
         status = st.empty()
@@ -82,8 +83,11 @@ with placeholder.container():
         st.session_state.simulando = False
 
     st.subheader("Gráfico interactivo")
-    fig = Visualizer.plot_interactive_combined(test_data, flags=flags, signals=simulation.signals)
-    st.plotly_chart(fig, use_container_width=True)
+
+    fig_training = Visualizer.plot_interactive_combined(training_data, title="Precios de entrenamiento")
+    fig_test = Visualizer.plot_interactive_combined(test_data, flags=flags, signals=simulation.signals, title="Precios de test")
+    st.plotly_chart(fig_training, use_container_width=True)
+    st.plotly_chart(fig_test, use_container_width=True)
 
     st.subheader("Operaciones simuladas")
     st.dataframe(operaciones)

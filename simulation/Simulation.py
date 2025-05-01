@@ -3,59 +3,101 @@ from analytics.MultiOutputRegression import MultiOutputRegression
 from analytics.NeuralNetwork import NeuralNetwork
 from simulation.Strategy import Strategy 
 from metrics.ErrorMetrics import ErrorMetrics
-from sklearn.preprocessing import MinMaxScaler
+
+import numpy as np
 
 class Simulation:
-    def __init__(self, training_data, test_data, capital_por_operacion=1000):
+    def __init__(self, training_data, test_data, capital_por_operacion=1000, horario_permitido=('08:00', '16:30')):
         self.capital_por_operacion = capital_por_operacion
         self.training_data = training_data
         self.test_data = test_data
+        self.horario_permitido = horario_permitido
         self.signals = None
 
     def calculate_regresion(self, progress_callback):
         '''Calcula regresión lineal y guarda predicciones en dataframe'''
 
-        X = []
-
         # Filtrar horario operativo
         training_data_daily = self.training_data.copy()
         test_data_daily = self.test_data.copy()
-        training_data_daily = training_data_daily.between_time('08:00', '16:30')
-        test_data_daily = test_data_daily.between_time('08:00', '16:30')
+        training_data_daily = training_data_daily.between_time(self.horario_permitido[0], self.horario_permitido[1])
+        test_data_daily = test_data_daily.between_time(self.horario_permitido[0], self.horario_permitido[1])
 
-        window_optimo = MultiOutputRegression.optimize_window(training_data_daily, progress_callback)
+        # Encontramos parámetros óptimos
+        best_params = MultiOutputRegression.optimize(data=training_data_daily, progress_callback=progress_callback)
+        window_optimo = best_params['window']
+        buffer_size = best_params['buffer']
+
         model = MultiOutputRegression(window=window_optimo)
-        model.train(test_data_daily['<CLOSE>'])
+        
+        # Puntos de entrenamiento iniciales
+        X_test, y_test = MultiOutputRegression.prepare_data(test_data_daily['<CLOSE>'], window=window_optimo)
 
-        rango = len(test_data_daily) - model.window - model.horizon
+        train_close = training_data_daily['<CLOSE>'].values
+        test_close = test_data_daily['<CLOSE>'].values
 
-        if rango <= 0:
-            print("❌ No hay suficientes datos para backtesting.")
-            return
+        # Guardar predicciones 
+        y_pred_list = []
+        y_test_list = []
 
-        for i in range(rango):
-            X.append(test_data_daily[i:i + model.window]['<CLOSE>'].values)  
+        progress_callback(1, "⚙️ Calculando predicciones")
 
-        # Si no hay suficientes datos
-        if len(X) == 0:
-            return []
+        horizon = 3
 
-        # Calcular predicciones y guardar la de horizon
-        y_pred = model.predict(X)
-        y_pred_final = y_pred[:, -1]
+        # Total de pasos en la simulación en tiempo real
+        steps = len(test_close)
 
-        valid_indices = test_data_daily.index[model.window + model.horizon - 1:]
+        for i in range(steps):
+            # Número real de puntos a coger
+            train_size = buffer_size + window_optimo
 
-        # Ajustar si no coinciden exactamente 
-        if len(valid_indices) > len(y_pred_final):
-            valid_indices = valid_indices[:len(y_pred_final)]
-        elif len(valid_indices) < len(y_pred_final):
-            y_pred_final = y_pred_final[:len(valid_indices)]
+            # Coger últimos puntos de training + inicio de test
+            train_window = train_close[-train_size:]
+            test_window = test_close[:i + 1]
+
+            # Datos disponibles hasta el punto actual
+            current_data = np.concatenate([train_window, test_window])
+            
+            # Entrenamiento solo con datos anteriores al objetivo   
+            train_data = current_data[:-(horizon)]
+                
+            X_train, y_train = MultiOutputRegression.prepare_data(train_data, window=window_optimo)
+
+            # Entrenar el modelo con datos actuales
+            model.train(X_train, y_train)
+
+            # Preparar ventana para predicción del siguiente valor
+            last_input = current_data[-(window_optimo + horizon) : -horizon]  # Última ventana de entrada
+            y_true = current_data[-1]
+            
+            y_pred = model.predict(last_input)
+            y_pred_real = y_pred[0, -1]
+
+            # Guardar resultados
+            y_pred_list.append(y_pred_real)
+            y_test_list.append(y_true)
+            
+            if i == 0:
+                print(f"  Reentrenando modelo...")
+                print(f"  Reentrenado con muestra {i}")
+                print(f"  📈 last_input: {last_input}")
+                print(f"  🎯 y_true (valor real actual): {y_true}")
+                print(f"  🤖 y_pred completo: {y_pred}")
+                print(f"  🏁 y_pred_real (último valor predicho): {y_pred_real}")
+                print("-" * 40)
+
+        # Calcular error
+        error_metrics = ErrorMetrics(y_test_list, y_pred_list)
+        avg_rmse = error_metrics.rmse()
+
+        print(f"Error final de regresión (avg_rmse): {avg_rmse}")
+
+        valid_indices = test_data_daily.index[:len(y_pred_list)]
 
         # Asignar las predicciones
-        self.test_data.loc[valid_indices, 'Prediction'] = y_pred_final
+        self.test_data.loc[valid_indices, 'Prediction'] = y_pred_list
 
-    def calculate_pred_neuralNetwork(self, neuralNetwork_cb):
+    def calculate_pred_neuralNetwork(self, progress_callback):
 
         horizon = 3
 
@@ -65,73 +107,80 @@ class Simulation:
         # Filtrar horario operativo
         training_data_daily = self.training_data.copy()
         test_data_daily = self.test_data.copy()
-        training_data_daily = training_data_daily.between_time('08:00', '16:30')
-        test_data_daily = test_data_daily.between_time('08:00', '16:30')
-
-        # Escalar los datos
-        scaler = MinMaxScaler()
-        training_data_scaled = scaler.fit_transform(training_data_daily['<CLOSE>'].values.reshape(-1, 1)).flatten()
-        test_data_scaled = scaler.transform(test_data_daily['<CLOSE>'].values.reshape(-1, 1)).flatten()
+        training_data_daily = training_data_daily.between_time(self.horario_permitido[0], self.horario_permitido[1])
+        test_data_daily = test_data_daily.between_time(self.horario_permitido[0], self.horario_permitido[1])
 
         # Optimizar hiperparámetros
-        best_params = nn_model.optimize(data=training_data_daily, progress_callback=neuralNetwork_cb, scaler=scaler)
+        best_params = nn_model.optimize(data=training_data_daily, progress_callback=progress_callback)
+        window = best_params['window']
+        buffer = best_params['buffer']
 
-        if not best_params:
-            neuralNetwork_cb(1, "❌ No hay suficientes datos para optimizar la red")
+        if best_params:
+            nn_model = NeuralNetwork(buffer_size=buffer, input_shape=window, learning_rate=best_params['learning_rate'],
+                                     hidden_neurons=best_params['neurons'], batch_size=best_params['batch_size'])
+        else:
+            progress_callback(1, "❌ No hay suficientes datos para optimizar la red")
 
-        # Preparar entradas y salidas sobre datos escalados
-        X_train, y_train = nn_model.prepare_data(training_data_scaled)
-        X_test, y_test = nn_model.prepare_data(test_data_scaled)
+        train_close = training_data_daily['<CLOSE>'].values
+        test_close = test_data_daily['<CLOSE>'].values
 
-        # Entrenar la red
-        nn_model.train(X_train, y_train)
+        print(train_close)
 
-        # Guardar predicciones reales
-        y_pred_real_list = []
-        y_test_real_list = []
+        y_pred_list = []
+        y_test_list = []
 
-        neuralNetwork_cb(1, "⚙️ Entrenando red neuronal")
+        # Total de pasos en la simulación en tiempo real
+        steps = len(test_close)
 
-        # Predecir y reentrenar con cada nuevo precio
-        for i in range(len(X_test)):
+        for i in range(steps):
+            progress_callback(i / steps, f"⚙️ Calculando predicción {i} de {steps}")
 
-            # 1. Predecir la variación de precio para esta muestra
-            y_pred_change = nn_model.predict(X_test[i:i+1])
+            # Número real de puntos a coger
+            train_size = buffer + window
 
-            # 2. Reconstruir el precio escalado
-            y_pred_scaled = y_pred_change[0] + X_test[i, -1]
-            y_test_scaled = y_test[i] + X_test[i, -1]
+            # Coger últimos puntos de training + inicio de test
+            train_window = train_close[-train_size:]
+            test_window = test_close[:i + 1]
 
-            # 3. Invertir escala
-            y_pred_real = scaler.inverse_transform([[y_pred_scaled]])[0, 0]
-            y_test_real = scaler.inverse_transform([[y_test_scaled]])[0, 0]
+            # Datos disponibles hasta el punto actual
+            current_data = np.concatenate([train_window, test_window])
+            
+            # Entrenamiento solo con datos anteriores al objetivo   
+            train_data = current_data[:-(horizon)]
 
-            y_pred_real_list.append(y_pred_real)
-            y_test_real_list.append(y_test_real)
+            X_train, y_train = nn_model.prepare_data(train_data)
 
-            # 4. ⚡ Reentrenar con el dato real
-            X_new = X_test[i:i+1]  # Input que usaste
-            y_new = y_test[i:i+1]  # Salida real
+            # Entrenar el modelo con datos actuales
+            nn_model.train(X_train, y_train)
 
-            nn_model.train(X_new, y_new, epochs=1, batch_size=1)
+            # Preparar ventana para predicción del siguiente valor
+            last_input = current_data[-(window + horizon) : -horizon].reshape(1, -1) 
+            y_true = current_data[-1]
+            
+            y_pred = nn_model.predict(last_input)
+            y_pred_real = y_pred[0, -1]
+            
+            if i < 5:
+                print(f"  🏋️ last_input: {last_input}")
+                print(f"  🔍 y_pred: {y_pred_real}")
+                print(f"  y_true: {y_true}")
+            
+            y_pred_list.append(y_pred_real)
+            y_test_list.append(y_true)
 
-        # Calcular error
-        error_metrics = ErrorMetrics(y_test_real_list, y_pred_real_list)
-        avg_rmse = error_metrics.rmse()
+        if len(y_pred_list) > 0 and len(y_test_list) > 0:
+            # Calcular error
+            error_metrics = ErrorMetrics(y_test_list, y_pred_list)
+            avg_rmse = error_metrics.rmse()
 
-        print(f"Error final de red neuronal (avg_rmse): {avg_rmse}")
+            print(f"Error final de red neuronal (avg_rmse): {avg_rmse}")
 
-        # Crear la lista de índices donde quieres poner las predicciones
-        valid_indices = test_data_daily.index[nn_model.input_shape + horizon - 1:]
+            valid_indices = test_data_daily.index[:len(y_pred_list)]
 
-        # Ajustar si no coinciden exactamente 
-        if len(valid_indices) > len(y_pred_real_list):
-            valid_indices = valid_indices[:len(y_pred_real_list)]
-        elif len(valid_indices) < len(y_pred_real_list):
-            y_pred_real_list = y_pred_real_list[:len(valid_indices)]
+            # Asignar las predicciones en la columna 'Prediction' de self.test_data
+            self.test_data.loc[valid_indices, 'Prediction'] = y_pred_list
 
-        # Asignar las predicciones en la columna 'Prediction' de self.test_data
-        self.test_data.loc[valid_indices, 'Prediction'] = y_pred_real_list
+            self.test_data['Prediction'] = self.test_data['Prediction'].rolling(window=3, min_periods=1).mean()
 
     def run_rsi_strategy(self, progress_callback):
         '''Aplica la estrategía basada en señales de RSI'''
@@ -142,7 +191,7 @@ class Simulation:
         rsi_window = Indicators.optimize_rsi(self.training_data, progress_callback=progress_callback)
         Indicators.calculate_rsi(self.test_data, window=rsi_window)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar señales RSI
         self.signals = strategy.generate_rsi_signals(self.test_data)
@@ -161,7 +210,7 @@ class Simulation:
         short, long, signal = Indicators.optimize_macd(self.training_data, progress_callback=progress_callback)
         Indicators.calculate_macd(self.test_data, short_window=short, long_window=long, signal_window=signal)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar señales MACD
         self.signals = strategy.generate_macd_signals(self.test_data)
@@ -184,7 +233,7 @@ class Simulation:
         Indicators.calculate_rsi(self.test_data, window=rsi_window)
         Indicators.calculate_macd(self.test_data, short_window=short, long_window=long, signal_window=signal)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar las señales (RSI + MACD)
         self.signals = strategy.generate_rsi_macd_signals(self.test_data) 
@@ -209,7 +258,7 @@ class Simulation:
         # Calcular regresión y guardar predicciones en test_data
         self.calculate_regresion(regresion_cb)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar las señales (RSI + regresión)
         self.signals = strategy.generate_rsi_prediction_signals(self.test_data) 
@@ -233,7 +282,7 @@ class Simulation:
         # Calcular regresión
         self.calculate_regresion(regresion_cb)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar las señales (RSI + regresión)
         self.signals = strategy.generate_macd_prediction_signals(self.test_data) 
@@ -260,7 +309,7 @@ class Simulation:
         # Calcular regresión
         self.calculate_regresion(regresion_cb)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar las señales (RSI + regresión)
         self.signals = strategy.generate_rsi_macd_prediction_signals(self.test_data) 
@@ -284,7 +333,7 @@ class Simulation:
         # Calcular predicciones de red neuronal
         self.calculate_pred_neuralNetwork(neuralNetwork_cb)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar las señales (RSI + red neuronal)
         self.signals = strategy.generate_rsi_prediction_signals(self.test_data) 
@@ -307,7 +356,7 @@ class Simulation:
         # Calcular predicciones de red neuronal
         self.calculate_pred_neuralNetwork(neuralNetwork_cb)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar las señales (RSI + red neuronal)
         self.signals = strategy.generate_macd_prediction_signals(self.test_data) 
@@ -332,7 +381,7 @@ class Simulation:
         # Calcular predicciones de red neuronal
         self.calculate_pred_neuralNetwork(neuralNetwork_cb)
 
-        strategy = Strategy(capital_por_operacion=self.capital_por_operacion)
+        strategy = Strategy(capital_por_operacion=self.capital_por_operacion, horario_permitido=self.horario_permitido)
 
         # Generar las señales (RSI + red neuronal)
         self.signals = strategy.generate_rsi_macd_prediction_signals(self.test_data) 
@@ -341,3 +390,10 @@ class Simulation:
         operaciones = strategy.apply_strategy(self.test_data, self.signals)
 
         return operaciones
+    
+
+
+
+
+
+    

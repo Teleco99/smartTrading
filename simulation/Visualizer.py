@@ -13,7 +13,10 @@ class Visualizer:
         return fig
     
     @staticmethod
-    def plot_interactive_combined(data, flags, signals=None, title="Análisis interactivo"):
+    def plot_interactive_combined(data, flags=None, signals=None, title="Análisis interactivo"):
+        if flags is None:
+            flags = {}
+
         rows = 1 + int(flags.get("rsi", False)) + int(flags.get("macd", False))
 
         fig = make_subplots(

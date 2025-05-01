@@ -1,15 +1,18 @@
 from tensorflow import keras
+from tensorflow.keras.optimizers import Adam    # type: ignore
 from metrics.ErrorMetrics import ErrorMetrics
 from tensorflow.keras.callbacks import EarlyStopping    # type: ignore
 
 import numpy as np
 
 class NeuralNetwork:
-    def __init__(self, input_shape=24, hidden_neurons=64, epochs=100, batch_size=32):
+    def __init__(self, buffer_size=20, input_shape=24, learning_rate=0.001, hidden_neurons=64, batch_size=32, epoch=100):
+        self.buffer_size = buffer_size
         self.input_shape = input_shape
+        self.learning_rate = learning_rate
         self.hidden_neurons = hidden_neurons
-        self.epochs = epochs
         self.batch_size = batch_size
+        self.epochs = epoch
         self.early_stop = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
 
         self.model = self._build_model()
@@ -20,12 +23,9 @@ class NeuralNetwork:
         if not window:
             window = self.input_shape
         
-        for i in range(len(data) - window - horizon):
-            x_window = data[i:i+window]
-            future_value = data[i+window+horizon]
-
-            # Predecimos el cambio respecto al último valor de la ventana
-            y_target = future_value - x_window[-1]
+        for i in range(len(data) - window - horizon + 1):
+            x_window = data[i : i + window]
+            y_target = data[i + window : i + window + horizon]
 
             X.append(x_window)
             y.append(y_target)
@@ -33,120 +33,108 @@ class NeuralNetwork:
         return np.array(X), np.array(y)
     
     def _build_model(self):
+        optimizer = Adam(learning_rate=self.learning_rate)
         model = keras.Sequential([
-            keras.layers.Dense(self.hidden_neurons, activation='relu', input_shape=(self.input_shape,)),
-            keras.layers.Dense(self.hidden_neurons, activation='relu'),
-            keras.layers.Dense(1)  # Salida para predicción de precios
+            keras.layers.Dense(self.hidden_neurons, activation='elu', input_shape=(self.input_shape,)),
+            keras.layers.Dense(self.hidden_neurons, activation='elu'),
+            keras.layers.Dense(3)  # Salida para predicción de precios
         ])
-        model.compile(optimizer='adam', loss='mse')
+
+        model.compile(optimizer=optimizer, loss='mse')
         return model
     
-    def train(self, X_train, y_train, epochs=None, batch_size=None):
+    def train(self, X_train, y_train):
+
         history = self.model.fit(
             X_train, y_train, 
-            epochs=epochs if epochs else self.epochs,  
-            batch_size=batch_size if batch_size else self.batch_size, 
+            epochs=self.epochs,  
+            batch_size=self.batch_size, 
             callbacks=[self.early_stop], verbose=0
             )
 
         return history
 
     def predict(self, X):
-        return self.model.predict(X).flatten()
+        return self.model.predict(X)
 
-    def optimize(self, data, progress_callback, scaler, 
-                 window_options = [4, 8, 12, 16], hidden_neurons_options=[32, 48, 64], 
-                 learning_rates_options=[0.001, 0.005, 0.01], batch_sizes=[4, 8, 16], 
-                 max_epochs=100, train_ratio=0.6, horizon=3):
+    def optimize(self, data, progress_callback, 
+                 window_options=[16], hidden_neurons_options=[16, 32],
+                 learning_rates_options=[0.001, 0.005], batch_sizes=[8], buffer_sizes=[20, 40],
+                 horizon=3):
         """Optimizar hiperparámetros con división secuencial del conjunto de datos"""
         best_rmse = float('inf')
         best_params = {}
 
         completed = 0
-        total = len(window_options) * len(hidden_neurons_options) * len(learning_rates_options) * len(batch_sizes)
+        total = len(window_options) * len(hidden_neurons_options) * len(learning_rates_options) * len(batch_sizes) * len(buffer_sizes)
 
-        # Para no saturar al sistema con el entrenamiento, se usan máximo los ultimos 200 datos
-        data = data.iloc[-200:].copy()
+        # Para no saturar: usar máximo 100 datos
+        data_array = data['<CLOSE>'].values[-200:]
 
         # División secuencial del dataset
-        split_index = int(len(data) * train_ratio)
-        train_data = data.iloc[:split_index]['<CLOSE>'].values
-        val_data = data.iloc[split_index:]['<CLOSE>'].values
-
-        # Escalar para normalizar los datos
-        train_data_scaled = scaler.fit_transform(train_data.reshape(-1, 1)).flatten()
-        val_data_scaled = scaler.transform(val_data.reshape(-1, 1)).flatten()
+        split_index = int(len(data_array) * 0.7)
+        train_data = data_array[:split_index]
+        val_data = data_array[split_index:]
 
         for window in window_options:
             self.input_shape = window
 
-            # Usar los datos escalados para preparar X e y
-            X_train, y_train = self.prepare_data(train_data_scaled, window, horizon)
-            X_val, y_val = self.prepare_data(val_data_scaled, window, horizon)
-
-            # Depurar si no hay suficientes datos
-            if len(X_train) <= 30 or len(X_val) <= 10:
-                print("⚠️ Problema detectado:")
-                print(f"- Tamaño total de data: {len(data)}")
-                print(f"- Tamaño train_data: {len(train_data)}")
-                print(f"- Tamaño val_data: {len(val_data)}")
-                print(f"- Tamaño X_train: {len(X_train)}")
-                print(f"- Tamaño X_val: {len(X_val)}")
-                print(f"- Parámetros usados: window={window}, horizon={horizon}")
-                print(f"- No hay suficientes datos para esta combinación, saltando...\n")
-                continue
-
             for neurons in hidden_neurons_options:
                 self.hidden_neurons = neurons
-                self.model = self._build_model()
 
                 for lr in learning_rates_options:
-                    completed += len(batch_sizes)
+                    completed += (len(batch_sizes) * len(buffer_sizes))
                     progress_callback(completed / total, f"🔎 Optimizando red neuronal: Probando combinación {completed} de {total} datos")
 
+                    self.learning_rate = lr
+                    self.model = self._build_model()
+
                     for batch in batch_sizes:
-                            # Modificar hiperparámetros y reconstruir modelo
-                            self.learning_rate = lr
-                            self.batch_size = batch
-                            self.epochs = max_epochs
+                        self.batch_size = batch
+                    
+                        for buffer in buffer_sizes:
+                            # Número real de puntos a coger
+                            train_size = window + buffer + horizon
 
-                            # Entrenar con datos escalados
-                            history = self.train(X_train, y_train)
-                            epochs = len(history.history['loss'])   # Guardar epocas usadas hasta stop
+                            # Coger últimos puntos de training hasta horizon
+                            train_window = train_data[-train_size : -horizon]
 
-                            # Calcular predicciones con datos escalados
-                            predicciones_val = self.predict(X_val)
+                            # Preparar entradas (ventanas) sobre esos datos
+                            X_train, y_train = self.prepare_data(data=train_window, window=window)
 
-                            # Invertir escala
-                            predicciones_val_real = scaler.inverse_transform(predicciones_val.reshape(-1,1)).flatten()
-                            y_val_real = scaler.inverse_transform(y_val.reshape(-1,1)).flatten()
+                            # Entrenar
+                            self.train(X_train, y_train)
 
-                            # Calcular RMSE sobre precios reales
-                            error_metrics = ErrorMetrics(y_val_real, predicciones_val_real)
-                            avg_rmse = error_metrics.rmse()
+                            # Preparar ventanas de validación
+                            full_data = np.concatenate([train_data[-(window + horizon - 1):], val_data])
+                            X_val, y_val = self.prepare_data(full_data, window=window)
 
-                            print(f"Neural Network probada: window={window}, neurons={neurons}, learning_rate={lr}, batch_size={batch}, epochs={epochs}, avg_rmse={avg_rmse:.4}")
+                            y_pred = self.predict(X_val)
 
-                            if avg_rmse < best_rmse:
-                                best_rmse = avg_rmse
-                                best_params = {
-                                    'window': window,
-                                    'neurons': neurons,
-                                    'learning_rate': lr,
-                                    'batch_size': batch,
-                                    'epochs': epochs
-                                }
+                            y_pred_list = [pred[-1] for pred in y_pred]
+                            y_val_list = [val[-1] for val in y_val]
+                            
+                            if len(y_pred_list) > 0 and len(y_val_list) > 0:
+                                # Calcular error
+                                error_metrics = ErrorMetrics(y_val_list, y_pred_list)
+                                avg_rmse = error_metrics.rmse()
 
-        print(f'Mejores parámetros: {best_params}')
+                                if avg_rmse < best_rmse:
+                                    best_rmse = avg_rmse
+                                    best_params = {
+                                        'buffer': buffer,
+                                        'window': window,
+                                        'neurons': neurons,
+                                        'learning_rate': lr,
+                                        'batch_size': batch
+                                    }
 
-        if best_params:
-            # Aplicar los mejores parámetros
-            self.input_shape = best_params['window']
-            self.hidden_neurons = best_params['neurons']
-            self.learning_rate = best_params['learning_rate']
-            self.batch_size = best_params['batch_size']
-            self.epochs = best_params['epochs']
-            self.model = self._build_model()  # Crear modelo final con los mejores hiperparámetros
+                                print(f"✅ Neural Network probada: buffer={buffer}, window={window}, neurons={neurons}, learning_rate={lr}, batch_size={batch}, avg_rmse={avg_rmse:.4}")
+                            else:
+                                avg_rmse = float('inf')
+                                print(f"❌ Neural Network sin suficientes puntos: buffer={buffer}, window={window}, neurons={neurons}, learning_rate={lr}, batch_size={batch}, avg_rmse={avg_rmse:.4}")
+
+        print(f'🟢 Mejores parámetros: {best_params}')
 
         return best_params
 
