@@ -17,7 +17,7 @@ class NeuralNetwork:
 
         self.model = self._build_model()
 
-    def prepare_data(self, data, window=None, horizon=3):
+    def prepare_data(self, data, window=None, horizon=1):
         X, y = [], []
 
         if not window:
@@ -37,7 +37,7 @@ class NeuralNetwork:
         model = keras.Sequential([
             keras.layers.Dense(self.hidden_neurons, activation='elu', input_shape=(self.input_shape,)),
             keras.layers.Dense(self.hidden_neurons, activation='elu'),
-            keras.layers.Dense(3)  # Salida para predicción de precios
+            keras.layers.Dense(1)  # Salida para predicción de precios
         ])
 
         model.compile(optimizer=optimizer, loss='mse')
@@ -58,9 +58,9 @@ class NeuralNetwork:
         return self.model.predict(X)
 
     def optimize(self, data, progress_callback, 
-                 window_options=[16], hidden_neurons_options=[16, 32],
-                 learning_rates_options=[0.001, 0.005], batch_sizes=[8], buffer_sizes=[20, 40],
-                 horizon=3):
+                 window_options=[12, 18], hidden_neurons_options=[16, 32],
+                 learning_rates_options=[0.0001, 0.0005], batch_sizes=[4, 8], buffer_sizes=[12, 18],
+                 horizon=1):
         """Optimizar hiperparámetros con división secuencial del conjunto de datos"""
         best_rmse = float('inf')
         best_params = {}
@@ -113,6 +113,14 @@ class NeuralNetwork:
 
                             y_pred_list = [pred[-1] for pred in y_pred]
                             y_val_list = [val[-1] for val in y_val]
+
+                            print(f"  Optimizando modelo...")
+                            print(f"  📈 X_train[-1]: {X_train[-1]}")
+                            print(f"  📈 y_train[-1]: {y_train[-1]}")
+                            print(f"  📈 X_val[-1]: {X_val[-1]}")
+                            print(f"  🎯 y_val_list[-1]: {y_val_list[-1]}")
+                            print(f"  🤖 y_pred_list[-1]: {y_pred_list[-1]}")
+                            print("-" * 40)
                             
                             if len(y_pred_list) > 0 and len(y_val_list) > 0:
                                 # Calcular error

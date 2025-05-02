@@ -84,7 +84,7 @@ with home_placeholder.container():
             start_datetime = st.date_input("Fecha de inicio: ", value=dt.datetime(2025, 3, 10, 0, 0, 0))
 
         with col2:
-            end_datetime = st.date_input("Fecha de fin: ", value=dt.datetime(2025, 3, 12, 0, 0, 0))
+            end_datetime = st.date_input("Fecha de fin: ", value=dt.datetime(2025, 3, 11, 0, 0, 0))
 
         # Porcentaje de entrenamiento
         train_percentage = st.slider("Porcentaje de datos para entrenamiento", min_value=50, max_value=90, value=70, step=10)
@@ -108,8 +108,8 @@ with home_placeholder.container():
 
         data_daily = data.between_time(start_time_permitido, end_time_permitido)
 
-        if(len(data_daily) < 100):
-            st.error("Se necesitan al menos 50 puntos para la simulación")
+        if(len(data_daily) < 55):
+            st.error("Se necesitan al menos 55 puntos de entrenamiento")
         else:
             flags = get_flags_from_strategy(estrategia)
 

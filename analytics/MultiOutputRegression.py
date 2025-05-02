@@ -8,9 +8,8 @@ import pandas as pd
 class MultiOutputRegression:
     '''Modelo de regresión multioutput con horizonte de predicción variable.'''
     
-    def __init__(self, window=12, horizon=3, base_model=LinearRegression()):
+    def __init__(self, window=12, base_model=LinearRegression()):
         self.window = window  # Ventana de entrada (cuántos datos pasados se usan)
-        self.horizon = horizon  # Horizonte de predicción (número de valores futuros)
         self.model = MultiOutputRegressor(base_model)  # Modelo multioutput
 
     def train(self, X_data, y_data):
@@ -40,7 +39,7 @@ class MultiOutputRegression:
         return np.array(predictions)  # Retorna un array de arrays de predicciones
     
     @staticmethod
-    def prepare_data(data, window, horizon=3):
+    def prepare_data(data, window, horizon=1):
         '''Prepara los datos para el entrenamiento y la predicción generando las ventanas.'''
         X, y = [], []
 
@@ -51,7 +50,7 @@ class MultiOutputRegression:
         return np.array(X), np.array(y)
 
     @staticmethod
-    def optimize(data, progress_callback, buffer_sizes=[10, 20], window_range=[8, 16], horizon=3):
+    def optimize(data, progress_callback, buffer_sizes=[12, 18], window_range=[12, 18], horizon=1):
         '''Optimiza el parámetro window evaluando rolling forecasts sobre training/validation split.'''
         best_score = float('inf')
         best_params = {}
@@ -64,25 +63,26 @@ class MultiOutputRegression:
 
         # Split en entrenamiento y validación
         split_idx = int(len(data_array) * 0.7)
-        train_data = data_array[split_idx:]
-        val_data = data_array[:split_idx]
+        train_data = data_array[:split_idx]
+        val_data = data_array[split_idx:]
 
         for window in window_range:
             for buffer in buffer_sizes:
                     if len(train_data) < window + horizon:
                         continue
 
-                    model = MultiOutputRegression(window=window, horizon=horizon)
-
-                    X_val, y_val = MultiOutputRegression.prepare_data(data=val_data, window=window)
+                    model = MultiOutputRegression(window=window)
 
                     y_pred_list = []
                     y_test_list = []
 
+                    # Total de pasos en la simulación en tiempo real
+                    steps = len(val_data)
+
                     # Validar en validation pero empezando desde los ultimos training
-                    for i in range(len(X_val)):
+                    for i in range(steps):
                         if i % 10 == 0:
-                            progress_callback(completed / total, f"🔎 Optimizando regresión: Window {window}: {i}/{len(X_val)}")
+                            progress_callback(completed / total, f"🔎 Optimizando regresión: Window {window}: {i}/{steps}")
 
                         # Número real de puntos a coger
                         train_size = window + buffer
@@ -95,10 +95,10 @@ class MultiOutputRegression:
                         current_data = np.concatenate([train_window, val_window])
 
                         # Entrenamiento solo con datos anteriores al objetivo   
-                        train_data = current_data[:-(horizon)]
+                        current_train_data = current_data[:-(horizon)]
 
                         # Preparar entradas (ventanas) sobre esos datos
-                        X_train, y_train = MultiOutputRegression.prepare_data(data=train_data, window=window)
+                        X_train, y_train = MultiOutputRegression.prepare_data(data=current_train_data, window=window)
 
                         # Entrenar
                         model.train(X_train, y_train)

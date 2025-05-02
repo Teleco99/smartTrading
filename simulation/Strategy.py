@@ -20,7 +20,6 @@ class Strategy:
         for i in range(1, len(data) - 1):
             rsi_prev = data['RSI'].iloc[i - 1]
             rsi_now = data['RSI'].iloc[i]
-            rsi_next = data['RSI'].iloc[i + 1]
 
             if rsi_prev < 30 and rsi_now >= 30:
                 signals.iloc[i] = 1
@@ -103,7 +102,7 @@ class Strategy:
 
             if (slope > min_slope and rsi_prev < 30 and rsi_now >= 30):
                 signals.iloc[i] = 1
-            elif rsi_now > 70 or slope < -min_slope:
+            elif rsi_now > 70 and slope < -min_slope:
                 signals.iloc[i] = -1
 
         # Anular señales en días interpolados
@@ -183,7 +182,7 @@ class Strategy:
 
         return signals
 
-    def apply_strategy(self, data, signals, max_operaciones_abiertas=5):
+    def apply_strategy(self, data, signals, max_operaciones_abiertas=5, take_profit=0.02, stop_loss=0.01):
         '''Simula operaciones largas múltiples según señales, ejecutando en el siguiente precio disponible.'''
 
         operaciones = []
@@ -198,8 +197,11 @@ class Strategy:
         for i in range(1, len(data) - 1):  # evitamos el último índice para poder usar i+1
             señal = signals['Signal'].iloc[i]
 
+            precio_actual = data['<CLOSE>'].iloc[i]
+            fecha_actual = data.index[i]
+
             # Verificar horario de la señal
-            hora_actual = data.index[i].time()
+            hora_actual = fecha_actual.time()
             hora_inicio, hora_fin = horario_permitido
             hora_inicio = datetime.strptime(hora_inicio, '%H:%M').time()
             hora_fin = datetime.strptime(hora_fin, '%H:%M').time()
@@ -208,39 +210,46 @@ class Strategy:
                 continue  # no operamos fuera de horario
 
             if señal == 1 and len(abiertas) < max_operaciones_abiertas and not condicion_abierta:
-                compra_precio = data['<CLOSE>'].iloc[i]
-                compra_fecha = data.index[i]
-                cantidad_activos = self.capital_por_operacion / compra_precio
+                cantidad_activos = self.capital_por_operacion / precio_actual
 
                 abiertas.append({
-                    'compra_fecha': compra_fecha,
-                    'compra_precio': compra_precio,
-                    'cantidad_activos': cantidad_activos
+                    'compra_fecha': fecha_actual,
+                    'compra_precio': precio_actual,
+                    'cantidad_activos': cantidad_activos,
+                    'take_profit_price': precio_actual * (1 + take_profit),
+                    'stop_loss_price': precio_actual * (1 - stop_loss)
                 })
 
-                signals.at[compra_fecha, 'Operacion'] = 1  
+                signals.at[fecha_actual, 'Operacion'] = 1  
 
                 condicion_abierta = True
 
-            elif señal == -1 and abiertas:
-                venta_precio = data['<CLOSE>'].iloc[i]
-                venta_fecha = data.index[i]
+            for operacion in abiertas[:]:
+                stop_loss = operacion['stop_loss_price']
+                take_profit = operacion['take_profit_price']
+                compra_precio = operacion['compra_precio']
+                cantidad = operacion['cantidad_activos']
 
-                operacion = abiertas.pop(0)
-                ganancia = (venta_precio - operacion['compra_precio']) * operacion['cantidad_activos']
+                cerrar_por_sl_tp = precio_actual <= stop_loss or precio_actual >= take_profit
+                cerrar_por_senal = señal == -1
 
-                operaciones.append({
-                    'compra_fecha': operacion['compra_fecha'],
-                    'compra_precio': operacion['compra_precio'],
-                    'venta_fecha': venta_fecha,
-                    'venta_precio': venta_precio,
-                    'cantidad_activos': operacion['cantidad_activos'],
-                    'ganancia': ganancia
-                })
+                if cerrar_por_sl_tp or cerrar_por_senal:
+                    ganancia = (precio_actual - compra_precio) * cantidad
 
-                signals.at[venta_fecha, 'Operacion'] = -1  
+                    operaciones.append({
+                        'compra_fecha': operacion['compra_fecha'],
+                        'compra_precio': compra_precio,
+                        'venta_fecha': fecha_actual,
+                        'venta_precio': precio_actual,
+                        'cantidad_activos': cantidad,
+                        'ganancia': ganancia
+                    })
+
+                    abiertas.remove(operacion)
+
+                    signals.at[fecha_actual, 'Operacion'] = -1
                 
-                condicion_abierta = False
+                    condicion_abierta = False
 
             else:
                 condicion_abierta = False
