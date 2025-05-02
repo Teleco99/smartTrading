@@ -29,9 +29,6 @@ class Simulation:
         buffer_size = best_params['buffer']
 
         model = MultiOutputRegression(window=window_optimo)
-        
-        # Puntos de entrenamiento iniciales
-        X_test, y_test = MultiOutputRegression.prepare_data(test_data_daily['<CLOSE>'], window=window_optimo)
 
         train_close = training_data_daily['<CLOSE>'].values
         test_close = test_data_daily['<CLOSE>'].values
@@ -42,7 +39,7 @@ class Simulation:
 
         progress_callback(1, "⚙️ Calculando predicciones")
 
-        horizon = 3
+        horizon = 1
 
         # Total de pasos en la simulación en tiempo real
         steps = len(test_close)
@@ -98,9 +95,6 @@ class Simulation:
         self.test_data.loc[valid_indices, 'Prediction'] = y_pred_list
 
     def calculate_pred_neuralNetwork(self, progress_callback):
-
-        horizon = 3
-
         # Crear modelo
         nn_model = NeuralNetwork()
 
@@ -124,13 +118,13 @@ class Simulation:
         train_close = training_data_daily['<CLOSE>'].values
         test_close = test_data_daily['<CLOSE>'].values
 
-        print(train_close)
-
         y_pred_list = []
         y_test_list = []
 
         # Total de pasos en la simulación en tiempo real
         steps = len(test_close)
+
+        horizon = 1
 
         for i in range(steps):
             progress_callback(i / steps, f"⚙️ Calculando predicción {i} de {steps}")
@@ -164,9 +158,11 @@ class Simulation:
                 print(f"  🏋️ last_input: {last_input}")
                 print(f"  🔍 y_pred: {y_pred_real}")
                 print(f"  y_true: {y_true}")
-            
-            y_pred_list.append(y_pred_real)
-            y_test_list.append(y_true)
+
+            # Descartamos primer valor
+            if i != 0:
+                y_pred_list.append(y_pred_real)
+                y_test_list.append(y_true)
 
         if len(y_pred_list) > 0 and len(y_test_list) > 0:
             # Calcular error
@@ -175,12 +171,10 @@ class Simulation:
 
             print(f"Error final de red neuronal (avg_rmse): {avg_rmse}")
 
-            valid_indices = test_data_daily.index[:len(y_pred_list)]
+            valid_indices = test_data_daily.index[1:1 + len(y_pred_list)]
 
             # Asignar las predicciones en la columna 'Prediction' de self.test_data
             self.test_data.loc[valid_indices, 'Prediction'] = y_pred_list
-
-            self.test_data['Prediction'] = self.test_data['Prediction'].rolling(window=3, min_periods=1).mean()
 
     def run_rsi_strategy(self, progress_callback):
         '''Aplica la estrategía basada en señales de RSI'''
