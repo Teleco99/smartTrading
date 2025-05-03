@@ -71,7 +71,7 @@ timeframe = st.selectbox(
 )
 
 # Seleccionar mes (opciones predefinidas)
-meses_disponibles = [f"2025-{m:02d}" for m in range(1, 4)]
+meses_disponibles = [f"2025-{m:02d}" for m in range(1, 5)]
 year_month = st.selectbox(
     "Mes completo:",
     options=meses_disponibles,

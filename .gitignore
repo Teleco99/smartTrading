@@ -1,1 +1,9 @@
 darwinex/
+
+# Ignorar todo en la carpeta config/
+data/*
+
+# ¡Pero no ignores este archivo!
+!data/^IBEX_5m_2025-04.csv
+!data/^GSPC_5m_2025-04.csv
+!data/^DJI_5m_2025-04.csv
