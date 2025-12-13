@@ -1,23 +1,77 @@
 from simulation.Visualizer import Visualizer
-from simulation.Simulation import Simulation
+from simulation.SimulationController import SimulationController
 from metrics.Metrics import Metrics
 
+import pandas as pd
+import numpy as np
 import streamlit as st  # type: ignore
 
-def get_strategy_key(flags):
-    return tuple([
-        flags.get("rsi", False),
-        flags.get("macd", False),
-        flags.get("regresion", False),
-        flags.get("neuralNetwork", False)
-    ])
-
-print("Navegando a Simulation")
 
 placeholder = st.empty()
 
+def safe_to_dataframe(x, debug=False):
+    if debug:
+        # Mostrar debug antes de cambiar nada
+        st.write("--------------------------------")
+        st.write("Tipo original:", type(x).__name__)
+
+    try:
+        arr = np.array(x)
+    except Exception as e:
+        st.error(f"No se pudo convertir a array: {e}")
+        return pd.DataFrame()
+
+    if debug:
+        st.write("Tipo tras np.array:", type(arr).__name__)
+        st.write("ndim:", arr.ndim)
+        st.write("shape:", arr.shape)
+
+    # Escalar → 1x1
+    if arr.ndim == 0:
+        arr = arr.reshape(1, 1)
+
+    # 1D → convertir en columna
+    elif arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+
+    # 2D → OK
+    elif arr.ndim == 2:
+        pass
+
+    # Más dimensiones → forzar a 2D
+    else:
+        arr = arr.reshape(arr.shape[0], -1)
+
+    if debug:
+        st.write("shape final:", arr.shape)
+        st.write("--------------------------------")
+
+    return pd.DataFrame(arr)
+
+def format_result_dict(d):
+    formatted = {}
+    for k, v in d.items():
+        if isinstance(v, (float, int)):   # números → formatear
+            formatted[k] = f"{v:.2f}"
+        else:
+            formatted[k] = v              # otros tipos → dejar igual
+    return formatted
+
+def data_callback(tag, pos, X, y):
+    st.write(f"🔍 Datos de {tag} en t = {pos}")
+
+    # Convertimos siempre a DF (pero mostrando el debug dentro)
+    df_X = safe_to_dataframe(X).round(2)
+    df_y = safe_to_dataframe(y).round(2)
+
+    st.write("📌 Entradas (X)")
+    st.dataframe(df_X)
+
+    st.write("🎯 Salidas (y)")
+    st.dataframe(df_y)
+
 with placeholder.container():
-    required_keys = ["test_data", "training_data", "selected_strategy", "flags"]
+    required_keys = ["test_data", "training_data", "selected_strategy"]
     for key in required_keys:
         if key not in st.session_state:
             st.error(f"Falta '{key}'. Vuelve a la pantalla principal.")
@@ -27,9 +81,9 @@ with placeholder.container():
     horario_permitido = st.session_state.horario_permitido
     training_data = st.session_state.training_data
     test_data = st.session_state.test_data
-    flags = st.session_state.flags
+    estrategia = st.session_state.estrategia
 
-    simulation = Simulation(capital_por_operacion=capital_por_operacion, training_data=training_data, test_data=test_data, horario_permitido=horario_permitido)
+    simulation = SimulationController(capital_por_operacion=capital_por_operacion, training_data=training_data, test_data=test_data, horario_permitido=horario_permitido)
 
     if st.session_state.get("simulando", False):
         status = st.empty()
@@ -37,41 +91,37 @@ with placeholder.container():
 
         progress_bar = st.progress(0)
 
-        # Cálculo de proporción de carga por flag activo
-        active_flags = [k for k, v in flags.items() if v]
-        num_flags = len(active_flags)
-        step_fraction = 1 / num_flags
-        offset = 0.0
+        num_tecnicas = len([parte.strip() for parte in estrategia.split("+")])
+        step_fraction = 1 / num_tecnicas
 
-        def make_progress_callback(offset_local):
-            return lambda frac, message="": (
-                    progress_bar.progress(min(100, int((offset_local + frac * step_fraction) * 100))),
-                    status.info(message) if message else None
-                )
+        def make_progress_callback():
+            def callback(frac, message=""): 
+                    progress_bar.progress(min(100, int((frac * step_fraction) * 100)))
+                    if message:
+                        status.info(message)
+            return callback
 
         strategy_map = {
-            (True, False, False, False): simulation.run_rsi_strategy,
-            (False, True, False, False): simulation.run_macd_strategy,
-            (True, True, False, False): simulation.run_rsi_macd_strategy,
-            (True, False, True, False): simulation.run_rsi_regresion_strategy,
-            (False, True, True, False): simulation.run_macd_regresion_strategy,
-            (True, True, True, False): simulation.run_rsi_macd_regresion_strategy,
-            (True, False, False, True): simulation.run_rsi_neuralNetwork_strategy,
-            (False, True, False, True): simulation.run_macd_neuralNetwork_strategy,
-            (True, True, False, True): simulation.run_rsi_macd_neuralNetwork_strategy,
+            "RSI": simulation.run_rsi_strategy,
+            "MACD": simulation.run_macd_strategy,
+            "RSI + MACD": simulation.run_rsi_macd_strategy,
+            "RSI + Regresión Lineal": simulation.run_rsi_regresion_strategy,
+            "MACD + Regresión Lineal": simulation.run_macd_regresion_strategy,
+            "RSI + MACD + Regresión Lineal": simulation.run_rsi_macd_regresion_strategy,
+            "RSI + Neural Network": simulation.run_rsi_neuralNetwork_strategy,
+            "MACD + Neural Network": simulation.run_macd_neuralNetwork_strategy,
+            "RSI + MACD + Neural Network": simulation.run_rsi_macd_neuralNetwork_strategy,
+            "RSI + Random Forest": simulation.run_rsi_randomForest_strategy,
         }
 
-        key = get_strategy_key(flags)
-        if key in strategy_map:
-            operaciones = strategy_map[key](progress_callback=make_progress_callback(offset))
-            offset += step_fraction
+        if estrategia in strategy_map:
+            operaciones = strategy_map[estrategia](progress_callback=make_progress_callback(), data_callback=data_callback)
         else:
-            st.warning(f"Estrategia con flags {key} no implementada.")
+            st.warning(f"Estrategia con {key} no implementada.")
             st.stop()
 
         if not operaciones:
             st.info("No se generaron operaciones con las señales actuales.")
-            exit
 
         metricas = Metrics(operaciones)
         resumen = metricas.resumen()
@@ -82,10 +132,10 @@ with placeholder.container():
 
         st.session_state.simulando = False
 
-    st.subheader("Gráfico interactivo")
+    st.subheader("Gráficos interactivo")
 
     fig_training = Visualizer.plot_interactive_combined(training_data, title="Precios de entrenamiento")
-    fig_test = Visualizer.plot_interactive_combined(test_data, flags=flags, signals=simulation.signals, title="Precios de test")
+    fig_test = Visualizer.plot_interactive_combined(test_data, signals=simulation.signals, title="Precios de test")
     st.plotly_chart(fig_training, use_container_width=True)
     st.plotly_chart(fig_test, use_container_width=True)
 
@@ -96,8 +146,6 @@ with placeholder.container():
     st.dataframe(resumen, use_container_width=True)
     
     st.page_link("views/homeView.py", label="Volver")    
-
-        
 
            
 

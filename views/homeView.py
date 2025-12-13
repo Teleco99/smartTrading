@@ -13,7 +13,21 @@ def get_flags_from_strategy(strategy_name):
         "neuralNetwork": "Neural Network" in strategy_name
     }
 
-print("Navegando a Home")
+def extraer_temporalidad(nombre_archivo):
+    partes = nombre_archivo.replace(".csv", "").split("_")
+    if len(partes) >= 2:
+        return partes[1].lower()
+    return ""
+
+
+# Mapa entre opción del usuario y fragmento esperado en el nombre del archivo
+freq_map = {
+    "5min": "5m",
+    "15min": "15m",
+    "1h": "1h",
+    "1D": "1D"
+}
+
 
 home_placeholder = st.empty()
 
@@ -26,29 +40,26 @@ with home_placeholder.container():
     estrategia = st.selectbox("Selecciona estrategia:", 
                             ["RSI", "MACD", "RSI + MACD", 
                             "RSI + Regresión Lineal", "MACD + Regresión Lineal", "RSI + MACD + Regresión Lineal", 
-                            "RSI + Neural Network", "MACD + Neural Network", "RSI + MACD + Neural Network"])
-
-    # Carpeta de datos locales
-    data_folder = "data"
-
-    # Obtener lista de archivos CSV
-    csv_files = [f for f in os.listdir(data_folder) if f.endswith(".csv")]
+                            "RSI + Neural Network", "MACD + Neural Network", "RSI + MACD + Neural Network", 
+                            "RSI + Random Forest", "MACD + Random Forest", "RSI + MACD + Random Forest"])
 
     col1, col2 = st.columns([2, 1])
-
-    with col1:
-        # Selección de archivo
-        selected_file = st.selectbox(
-            "Selecciona un archivo de datos:", 
-            csv_files, 
-            index=0  # por defecto ESP35 5min
-        )
     with col2:
-        selected_freq = st.selectbox(
-            "Temporalidad:",
-            options=["1min", "5min", "15min", "30min", "1h", "1D"],
-            index=1  # por defecto 5min
-        )
+        selected_freq = st.selectbox("Temporalidad:", ["5min", "15min", "1h", "1D"], index=1)
+
+    # Convertimos la temporalidad seleccionada al código que aparece en los nombres de archivo
+    freq_code = freq_map[selected_freq]
+
+    # Carga de archivo que contengan la temporalidad
+    data_folder = "data"
+    csv_files = [
+        f for f in os.listdir(data_folder)
+        if f.endswith(".csv") and extraer_temporalidad(f) == freq_code.lower()
+    ]
+
+    # Selector de archivo (ya filtrado)
+    with col1:
+        selected_file = st.selectbox("Selecciona archivo:", csv_files)
 
     col1, col2 = st.columns([1, 1])
 
@@ -65,26 +76,27 @@ with home_placeholder.container():
 
         st.success(f"Archivo cargado: {selected_file}")
 
-        start_date = data_loader.data.index.min()
-        end_date = data_loader.data.index.max()
-        data = data_loader.get_filtered_data(start_date, end_date)
+        if data_loader.data is not None:
+            start_date = data_loader.data.index.min()
+            end_date = data_loader.data.index.max()
+            data = data_loader.get_filtered_data(start_date, end_date)
 
-        fig = Visualizer.plot_interactive_price(data)
-        st.plotly_chart(fig, use_container_width=True)
+            fig = Visualizer.plot_interactive_price(data)
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Mostrar información general
-        st.write("Rango de fechas disponible:")
-        st.write(f"Desde: {data_loader.data.index.min()}  Hasta: {data_loader.data.index.max()}")
+            # Mostrar información general
+            st.write("Rango de fechas disponible:")
+            st.write(f"Desde: {data_loader.data.index.min()}  Hasta: {data_loader.data.index.max()}")
 
         # Selección de fechas desde el frontend 
         col1, col2 = st.columns(2)
 
         # Intervalo total
         with col1:
-            start_datetime = st.date_input("Fecha de inicio: ", value=dt.datetime(2025, 3, 10, 0, 0, 0))
+            start_datetime = st.date_input("Fecha de inicio: ", value=dt.datetime(2025, 5, 1, 0, 0, 0))
 
         with col2:
-            end_datetime = st.date_input("Fecha de fin: ", value=dt.datetime(2025, 3, 11, 0, 0, 0))
+            end_datetime = st.date_input("Fecha de fin: ", value=dt.datetime(2025, 5, 31, 0, 0, 0))
 
         # Porcentaje de entrenamiento
         train_percentage = st.slider("Porcentaje de datos para entrenamiento", min_value=50, max_value=90, value=70, step=10)
@@ -108,8 +120,8 @@ with home_placeholder.container():
 
         data_daily = data.between_time(start_time_permitido, end_time_permitido)
 
-        if(len(data_daily) < 55):
-            st.error("Se necesitan al menos 55 puntos de entrenamiento")
+        if(len(data_daily) < 100):
+            st.error("Se necesitan al menos 100 puntos de entrenamiento")
         else:
             flags = get_flags_from_strategy(estrategia)
 
@@ -118,7 +130,7 @@ with home_placeholder.container():
             st.session_state.training_data = training_data
             st.session_state.test_data = test_data
             st.session_state.horario_permitido = (start_time_permitido.strftime("%H:%M"), end_time_permitido.strftime("%H:%M"))
-            st.session_state.flags = flags
+            st.session_state.estrategia = estrategia
 
             st.session_state.current_view = "simulation"
             st.session_state.simulando = True

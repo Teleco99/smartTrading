@@ -13,11 +13,12 @@ class Visualizer:
         return fig
     
     @staticmethod
-    def plot_interactive_combined(data, flags=None, signals=None, title="Análisis interactivo"):
-        if flags is None:
-            flags = {}
-
-        rows = 1 + int(flags.get("rsi", False)) + int(flags.get("macd", False))
+    def plot_interactive_combined(data, signals=None, operaciones=[], title="Análisis interactivo"):
+        # Detectar qué indicadores están presentes
+        tiene_rsi = 'RSI' in data.columns and data['RSI'].notna().any()
+        tiene_macd = 'MACD' in data.columns and data['MACD'].notna().any() and 'MACD_Signal' in data.columns
+        
+        rows = 1 + int(tiene_rsi) + int(tiene_macd)
 
         fig = make_subplots(
             rows=rows, cols=1,
@@ -25,8 +26,8 @@ class Visualizer:
             vertical_spacing=0.05,
             row_heights=[0.5] + [0.25] * (rows - 1),
             subplot_titles=["Precio"] +
-                (["RSI"] if flags.get("rsi") else []) +
-                (["MACD"] if flags.get("macd") else [])
+                (["RSI"] if tiene_rsi else []) +
+                (["MACD"] if tiene_macd else [])
         )
 
         row = 1
@@ -37,16 +38,20 @@ class Visualizer:
             name='Precio',
             line=dict(color='blue')
         ), row=row, col=1)
-
+        
         if 'Prediction' in data.columns:
+            pred_series = data['Prediction'].dropna()
+            print(pred_series.index)
+            print(pred_series.values)
             fig.add_trace(go.Scatter(
-                x=data.index, y=data['Prediction'],
+                x=pred_series.index, 
+                y=pred_series.values,
                 name='Prediction',
                 line=dict(color='orange', dash='dash')
             ), row=row, col=1)
 
         # === Señales ===
-        if signals is not None and 'Signal' in signals.columns:
+        if signals is not None and 'Operacion' in signals.columns:
             buy_ops = signals[signals['Operacion'] == 1]
             sell_ops = signals[signals['Operacion'] == -1]
 
@@ -54,7 +59,7 @@ class Visualizer:
                 x=buy_ops.index,
                 y=data.loc[buy_ops.index, '<CLOSE>'],
                 mode='markers',
-                name='Compra',
+                name='Señal de compra',
                 marker=dict(color='green', symbol='triangle-up', size=10)
             ), row=row, col=1)
 
@@ -66,10 +71,33 @@ class Visualizer:
                 marker=dict(color='red', symbol='triangle-down', size=10)
             ), row=row, col=1)
 
+        # === OPERACIONES ===
+        if operaciones and len(operaciones) > 0:
+            compras_x = [op['compra_fecha'] for op in operaciones]
+            compras_y = [op['compra_precio'] for op in operaciones]
+            ventas_x = [op['venta_fecha'] for op in operaciones]
+            ventas_y = [op['venta_precio'] for op in operaciones]
+
+            fig.add_trace(go.Scatter(
+                x=compras_x,
+                y=compras_y,
+                mode='markers',
+                name='Compra Real',
+                marker=dict(color='green', symbol='star', size=12)
+            ), row=row, col=1)
+
+            fig.add_trace(go.Scatter(
+                x=ventas_x,
+                y=ventas_y,
+                mode='markers',
+                name='Venta Real',
+                marker=dict(color='red', symbol='x', size=12)
+            ), row=row, col=1)
+
         row += 1
 
         # === RSI ===
-        if flags.get("rsi"):
+        if tiene_rsi:
             fig.add_trace(go.Scatter(
                 x=data.index, y=data['RSI'],
                 name='RSI',
@@ -84,7 +112,7 @@ class Visualizer:
             row += 1
 
         # === MACD ===
-        if flags.get("macd"):
+        if tiene_macd:
             fig.add_trace(go.Scatter(
                 x=data.index, y=data['MACD'],
                 name='MACD',

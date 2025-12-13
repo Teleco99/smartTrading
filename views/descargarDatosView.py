@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import streamlit as st
 import yfinance as yf
 import os
@@ -18,18 +20,23 @@ def descargar_y_guardar(symbol, timeframe, year_month):
         end_date = f"{year}-{month+1:02d}-01"
 
     # Descargar datos
+    print(f"Descargando datos de {start_date} a {end_date}")
     df = yf.download(symbol, interval=timeframe, start=start_date, end=end_date, progress=False)
+ 
+    # Procesar datos
+    if df is not None and not df.empty:
+        df = df.reset_index()
+        df['DATE'] = df['Datetime'].dt.strftime('%Y.%m.%d')
+        df['TIME'] = df['Datetime'].dt.strftime('%H:%M:%S')
+        df_clean = df[['DATE', 'TIME', 'Close']]
+        df_clean.columns = ['<DATE>', '<TIME>', '<CLOSE>']
 
-    if df.empty:
+        if df.empty:
+            st.error("No se encontraron datos para esa combinación.")
+            return
+    else:
         st.error("No se encontraron datos para esa combinación.")
         return
-
-    # Procesar datos
-    df = df.reset_index()
-    df['DATE'] = df['Datetime'].dt.strftime('%Y.%m.%d')
-    df['TIME'] = df['Datetime'].dt.strftime('%H:%M:%S')
-    df_clean = df[['DATE', 'TIME', 'Close']]
-    df_clean.columns = ['<DATE>', '<TIME>', '<CLOSE>']
 
     # Guardar CSV
     filename = f"data/{symbol.upper()}_{timeframe}_{year_month}.csv"
@@ -71,11 +78,13 @@ timeframe = st.selectbox(
 )
 
 # Seleccionar mes (opciones predefinidas)
-meses_disponibles = [f"2025-{m:02d}" for m in range(1, 5)]
+año_actual = datetime.now().year
+mes_actual = datetime.now().month
+meses_disponibles = [f"{año_actual}-{m:02d}" for m in range(1, mes_actual + 1)]
+
 year_month = st.selectbox(
     "Mes completo:",
-    options=meses_disponibles,
-    index=2  # marzo
+    options=meses_disponibles
 )
 
 if st.button("Descargar y Guardar CSV"):

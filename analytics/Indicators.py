@@ -3,108 +3,148 @@ import pandas as pd
 from itertools import product
 
 class Indicators:
+    RISK_PCT = 0.005      # 0.5% de riesgo 
+    RR = 2.0             # 2:1
+    MAX_BARS = 5         # máximo 5 velas abiertas
 
     @staticmethod
     def calculate_macd(data, short_window=12, long_window=26, signal_window=9):
-        # Cálculo de la media exponencial rápida
-        data['EMA_short'] = data['<CLOSE>'].ewm(span=short_window, adjust=False).mean()
-        
-        # Cálculo de la media exponencial lenta
-        data['EMA_long'] = data['<CLOSE>'].ewm(span=long_window, adjust=False).mean()
-        
-        # Línea MACD: diferencia entre la EMA corta y la larga
-        data['MACD'] = data['EMA_short'] - data['EMA_long']
-        
-        # Línea de señal: media exponencial de la línea MACD
-        data['MACD_Signal'] = data['MACD'].ewm(span=signal_window, adjust=False).mean()
+        # Recorta las filas sobre las que se va a calcular
+        valid_data = data[data['<CLOSE>'].notna()]
+
+        # Calcula columnas intermedias sobre los datos truncados
+        ema_short = valid_data['<CLOSE>'].ewm(span=short_window, adjust=False).mean()
+        ema_long = valid_data['<CLOSE>'].ewm(span=long_window, adjust=False).mean()
+        macd = ema_short - ema_long
+        macd_signal = macd.ewm(span=signal_window, adjust=False).mean()
+
+        # Asigna al DataFrame original, solo en las filas afectadas
+        data.loc[macd.index, 'MACD'] = macd
+        data.loc[macd_signal.index, 'MACD_Signal'] = macd_signal
 
     @staticmethod
-    def optimize_macd(data, progress_callback, short_range=range(10, 16), long_range=range(24, 31), signal_range=range(7, 11), horizon=3):
-        best_params = None
+    def optimize_macd(data, progress_callback, short_range=[11, 13, 15], long_range=[25, 27, 29], signal_range=[7, 9, 11], verbose=False):
         max_score = float('-inf')
         total = sum(1 for _ in product(short_range, long_range, signal_range))
         completed = 0
 
         for short, long, signal in product(short_range, long_range, signal_range):
-            if short >= long:
-                continue
-
             temp = data.copy()
             Indicators.calculate_macd(temp, short_window=short, long_window=long, signal_window=signal)
             temp.dropna(inplace=True)
 
-            if 'Interpolado' not in temp.columns:
-                raise ValueError("Falta la columna 'Interpolado' en los datos.")
+            if 'Interpolado' not in data.columns:
+                temp['Interpolado'] = False
 
             temp['MACD_prev'] = temp['MACD'].shift(1)
             temp['MACD_Signal_prev'] = temp['MACD_Signal'].shift(1)
-            temp['Position'] = 0
-            position_counter = 0
+            temp['Entrada'] = 0
 
-            for i in range(len(temp) - horizon - 1):
+            # Detectar posibles entradas
+            for i in range(len(temp) - 1):
                 macd_prev = temp['MACD_prev'].iloc[i]
-                macd_sig_prev = temp['MACD_Signal_prev'].iloc[i]
+                sig_prev = temp['MACD_Signal_prev'].iloc[i]
                 macd_now = temp['MACD'].iloc[i]
-                macd_sig_now = temp['MACD_Signal'].iloc[i]
+                sig_now = temp['MACD_Signal'].iloc[i]
 
-                # Entrada: cruce MACD > Señal
-                if macd_prev < macd_sig_prev and macd_now > macd_sig_now:
-                    position_counter += 1  # abrir nueva posición
-                    temp.at[temp.index[i], 'Position'] = position_counter
-
-                # Salida: cruce MACD < Señal
-                elif macd_prev > macd_sig_prev and macd_now < macd_sig_now and position_counter > 0:
-                    position_counter -= 1  # cerrar una posición
-                    temp.at[temp.index[i], 'Position'] = position_counter
-
+                if macd_prev < sig_prev and macd_now > sig_now:
+                    temp.at[temp.index[i], 'Entrada'] = 1
                 else:
-                    temp.at[temp.index[i], 'Position'] = position_counter
+                    temp.at[temp.index[i], 'Entrada'] = 0
 
-            temp['ExitPrice'] = temp['<CLOSE>'].shift(-horizon)
-            temp['FutureReturn'] = temp['ExitPrice'] / temp['<CLOSE>'] - 1
-            temp['Strategy'] = (temp['Position'].shift(1) - temp['Position']) * temp['FutureReturn']
+            # Simulación de trading real
+            temp['TradeReturn'] = 0.0
+            in_trade = False
+            entry_price = 0
+            stop_loss = 0
+            take_profit = 0
+
+            for i in range(len(temp) - 1):
+
+                # Entrada real
+                if temp['Entrada'].iloc[i] == 1 and not in_trade:
+                    in_trade = True
+                    entry_price = temp['<CLOSE>'].iloc[i]
+                    stop_loss = entry_price * (1 - Indicators.RISK_PCT)
+                    take_profit = entry_price * (1 + Indicators.RISK_PCT * Indicators.RR)
+                    continue
+
+                if not in_trade:
+                    continue
+
+                close = temp['<CLOSE>'].iloc[i]
+                macd_now = temp['MACD'].iloc[i]
+                sig_now = temp['MACD_Signal'].iloc[i]
+
+                # Vender en Take Profit
+                if close >= take_profit:
+                    temp.at[temp.index[i], 'TradeReturn'] = (take_profit / entry_price) - 1
+                    in_trade = False
+                    continue
+
+                # Vender en Stop Loss
+                if close <= stop_loss:
+                    temp.at[temp.index[i], 'TradeReturn'] = (stop_loss / entry_price) - 1
+                    in_trade = False
+                    continue
+
+                # Vender en MACD sobrecomprado
+                if macd_now < sig_now:
+                    temp.at[temp.index[i], 'TradeReturn'] = (close / entry_price) - 1
+                    in_trade = False
+                    continue
+
+                temp.at[temp.index[i], 'TradeReturn'] = 0.0
 
             valid_rows = temp['Interpolado'] != True
-            score = (1 + temp.loc[valid_rows, 'Strategy']).prod() - 1
+            score = (1 + temp.loc[valid_rows, 'TradeReturn']).prod() - 1
 
-            print(f"MACD probado: short={short}, long={long}, signal={signal}, score={score:.4%}")
+            if verbose: 
+                print(f"MACD probado: short={short}, long={long}, signal={signal}, score={score:.2%}")
 
-            if score > max_score:
-                best_params = (short, long, signal)
+            if score >= max_score:
+                best_params = {
+                    'short': short,
+                    'long': long,
+                    'signal': signal,
+                    'max_score': score * 100,   # almacenar como porcentaje
+                }
                 max_score = score
 
             completed += 1
-            progress_callback(completed / total)
+            progress_callback(completed / total, "Optimizando MACD")
 
-        print(f"🟢 Mejor MACD: Params={best_params}, Score total={max_score:.4%}")
-        print(temp[(temp["Position"].diff() != 0) & (temp['Interpolado'] != True)][['<CLOSE>', 'ExitPrice', 'Position', 'FutureReturn', 'Strategy']])
+        print(f"🟢 Mejor MACD: Params={best_params}, Score total={max_score:.2%}")
 
         return best_params
 
     @staticmethod
     def calculate_rsi(data, window=14):
-        # Diferencia entre precios consecutivos
-        delta = data['<CLOSE>'].diff(1)
-        
+        valid_data = data['<CLOSE>'].dropna()
+
+        # Calcular diferencia de precios
+        delta = valid_data.diff()
+
         # Separar ganancias y pérdidas
-        gain = np.where(delta > 0, delta, 0)
-        loss = np.where(delta < 0, -delta, 0)
+        gain = delta.where(delta > 0, 0.0)
+        loss = -delta.where(delta < 0, 0.0)
 
         # Suavizado exponencial
-        avg_gain = pd.Series(gain).ewm(span=window, min_periods=window).mean()
-        avg_loss = pd.Series(loss).ewm(span=window, min_periods=window).mean()
+        avg_gain = gain.ewm(span=window, min_periods=window).mean()
+        avg_loss = loss.ewm(span=window, min_periods=window).mean()
 
-        # Inicializar RSI
-        data['RSI'] = np.nan
-        for i in range(1, len(data)):
-            avg_gain_i = avg_gain.iloc[i]
-            avg_loss_i = avg_loss.iloc[i]
-            rs_i = np.inf if avg_loss_i == 0 else avg_gain_i / avg_loss_i
-            data.loc[data.index[i], 'RSI'] = 100 - (100 / (1 + rs_i))
+        # Calcular RS y RSI
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        # Reindexar RSI al índice original de data, rellenando con NaN donde falte
+        rsi_full = rsi.reindex(data.index)
+
+        # Asignar a la columna RSI
+        data['RSI'] = rsi_full
 
     @staticmethod
-    def optimize_rsi(data, progress_callback, window_range=range(10, 16), horizon=3):
-        best_window = None
+    def optimize_rsi(data, progress_callback, window_range=range(9, 19), verbose=False):
         max_score = float('-inf')
         total = len(window_range)
         completed = 0
@@ -114,48 +154,83 @@ class Indicators:
             Indicators.calculate_rsi(temp, window=window)
             temp.dropna(inplace=True)
 
-            if 'Interpolado' not in temp.columns:
-                raise ValueError("Falta la columna 'Interpolado' en los datos.")
+            if 'Interpolado' not in data.columns:
+                temp['Interpolado'] = False
 
             temp['RSI_prev'] = temp['RSI'].shift(1)
-            temp['Position'] = 0
-            position_counter = 0
+            temp['Entrada'] = 0
 
-            for i in range(1, len(temp) - 1):  # -1 porque miramos i+1
+            for i in range(len(temp) - 1):  # -1 porque miramos i+1
                 rsi_prev = temp['RSI_prev'].iloc[i]
                 rsi_now = temp['RSI'].iloc[i]
 
-                # Entrada: cruce confirmado de sobreventa (30)
+                # Entrada: RSI_PREW < 30 and RSI_NOW >= 30
                 if rsi_prev < 30 and rsi_now >= 30:
-                    position_counter += 1  # abrir nueva operación
-                    temp.at[temp.index[i], 'Position'] = position_counter
-
-                # Salida: RSI > 70
-                elif rsi_now > 70 and position_counter > 0:
-                    position_counter -= 1  # cerrar una operación
-                    temp.at[temp.index[i], 'Position'] = position_counter
-
+                    temp.at[temp.index[i], 'Entrada'] = 1
                 else:
-                    temp.at[temp.index[i], 'Position'] = position_counter
+                    temp.at[temp.index[i], 'Entrada'] = 0
 
-            # Estrategia sobre posiciones
-            temp['ExitPrice'] = temp['<CLOSE>'].shift(-horizon)
-            temp['FutureReturn'] = temp['ExitPrice'] / temp['<CLOSE>'] - 1
-            temp['Strategy'] = (temp['Position'].shift(1) - temp['Position']) * temp['FutureReturn']
+            temp['TradeReturn'] = 0.0
+            in_trade = False
+            entry_price = 0
+            stop_loss = 0
+            take_profit = 0
+
+            for i in range(len(temp) - 1):
+                # Detectar entrada
+                if temp['Entrada'].iloc[i] == 1 and not in_trade:
+                    in_trade = True
+                    entry_price = temp['<CLOSE>'].iloc[i]
+                    stop_loss = entry_price * (1 - Indicators.RISK_PCT)
+                    take_profit = entry_price * (1 + Indicators.RISK_PCT * Indicators.RR)
+                    continue
+
+                if not in_trade:
+                    continue
+
+                # Datos de la siguiente vela
+                close = temp['<CLOSE>'].iloc[i]
+                rsi_now = temp['RSI'].iloc[i]
+
+                # Vender en Take Profit
+                if close >= take_profit:
+                    exit_price = temp['<CLOSE>'].iloc[i]
+                    temp.at[temp.index[i], 'TradeReturn'] = (take_profit / entry_price) - 1
+                    in_trade = False
+                    continue
+
+                # Vender en Stop Loss
+                if close <= stop_loss:
+                    exit_price = temp['<CLOSE>'].iloc[i]
+                    temp.at[temp.index[i], 'TradeReturn'] = (stop_loss / entry_price) - 1
+                    in_trade = False
+                    continue
+
+                # Vender en RSI sobrecomprado
+                if rsi_now > 70:
+                    exit_price = temp['<CLOSE>'].iloc[i]
+                    temp.at[temp.index[i], 'TradeReturn'] = (exit_price / entry_price) - 1
+                    in_trade = False
+                    continue
+
+                temp.at[temp.index[i], 'TradeReturn'] = 0.0
 
             valid_rows = temp['Interpolado'] != True
-            score = (1 + temp.loc[valid_rows, 'Strategy']).prod() - 1
+            score = (1 + temp.loc[valid_rows, 'TradeReturn']).prod() - 1
 
-            print(f"RSI probado: window={window}, score={score:.4%}")
+            if verbose:
+                print(f"RSI probado: window={window}, score={score:.2%}")
 
-            if score > max_score:
-                best_window = window
+            if score >= max_score:
+                best_params = {
+                    'window': window,
+                    'max_score': score * 100,   # almacenar como porcentaje
+                }
                 max_score = score
 
             completed += 1
-            progress_callback(completed / total)
+            progress_callback(completed / total, "Optimizando RSI")
 
-        print(f"🟢 Mejor RSI: window={best_window}, Score={max_score:.4%}")
-        print(temp[(temp["Position"].diff() != 0) & valid_rows][['<CLOSE>', 'ExitPrice', 'Position', 'FutureReturn', 'Strategy']])
+        print(f"🟢 Mejor RSI: {best_params}")
 
-        return best_window
+        return best_params
