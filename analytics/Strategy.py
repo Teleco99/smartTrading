@@ -3,11 +3,12 @@ from datetime import datetime
 import pandas as pd
 
 class Strategy:
-    def __init__(self, capital_por_operacion=100, horario_permitido=('08:00', '17:00')):
+    
+    def __init__(self, capital_por_operacion=100, horario_permitido=('00:00', '23:59')):
         # Capital fijo invertido por operación
         self.capital_por_operacion = capital_por_operacion
         self.horario_permitido = horario_permitido
-        self.largo_abierta = False  # Solo operaciones largas
+        self.condicion_abierta = False
 
     def generate_rsi_signals(self, data):
         '''Genera señales con RSI:
@@ -17,13 +18,11 @@ class Strategy:
         signals = pd.DataFrame(index=data.index, columns=['Signal'])
         signals['Signal'] = 0
 
-        for i in range(1, len(data) - 1):
-            rsi_prev = data['RSI'].iloc[i - 1]
-            rsi_now = data['RSI'].iloc[i]
-
-            if rsi_prev < 30 and rsi_now >= 30:
+        for i in range(len(data)):
+            rsi = data['RSI'].iloc[i]
+            if rsi < 30:
                 signals.iloc[i] = 1
-            elif rsi_now > 70:
+            elif rsi > 70:
                 signals.iloc[i] = -1
 
         # Anular señales en días interpolados
@@ -39,17 +38,15 @@ class Strategy:
         signals = pd.DataFrame(index=data.index, columns=['Signal'])
         signals['Signal'] = 0
 
-        for i in range(1, len(data) - 1): 
-            macd_prev = data['MACD'].iloc[i - 1]
-            sig_prev = data['MACD_Signal'].iloc[i - 1]
-            macd_now = data['MACD'].iloc[i]
-            sig_now = data['MACD_Signal'].iloc[i]
+        for i in range(len(data)): 
+            macd = data['MACD'].iloc[i]
+            macd_sig = data['MACD_Signal'].iloc[i]
 
-            if macd_prev < sig_prev and macd_now > sig_now:
+            if macd > macd_sig:
                 signals.iloc[i] = 1
-            elif macd_now < sig_now:
+            elif macd < macd_sig:
                 signals.iloc[i] = -1
-
+            
         # Anular señales en días interpolados
         if 'Interpolado' in data.columns:
             signals.loc[data['Interpolado'] == True, 'Signal'] = 0
@@ -64,15 +61,14 @@ class Strategy:
         signals = pd.DataFrame(index=data.index, columns=['Signal'])
         signals['Signal'] = 0
 
-        for i in range(1, len(data) - 1):
-            rsi_prev = data['RSI'].iloc[i - 1]
-            rsi_now = data['RSI'].iloc[i]
-            macd_now = data['MACD'].iloc[i]
-            sig_now = data['MACD_Signal'].iloc[i]
+        for i in range(len(data)):
+            rsi = data['RSI'].iloc[i]
+            macd = data['MACD'].iloc[i]
+            macd_signal = data['MACD_Signal'].iloc[i]
 
-            if rsi_prev < 30 and rsi_now >= 30 and macd_now > sig_now:
+            if rsi < 30 and macd > macd_signal:
                 signals.iloc[i] = 1
-            elif rsi_now > 70 or macd_now < sig_now:
+            elif rsi > 70 or macd < macd_signal:
                 signals.iloc[i] = -1
 
         # Anular señales en días interpolados
@@ -81,7 +77,7 @@ class Strategy:
 
         return signals
 
-    def generate_rsi_prediction_signals(self, data, horizon=3, spread=0.0005):
+    def generate_rsi_prediction_signals(self, data, sampling_rate=3, horizon=1, spread=0.0005):
         '''RSI + Predicción:
         Entrada si RSI cruza 30 hacia arriba y predicción es alcista.
         Salida si RSI > 70.
@@ -92,17 +88,23 @@ class Strategy:
 
         if 'Prediction' not in data.columns:
             raise ValueError("Falta la columna 'Prediction'.")
+        
+        total_offset = horizon * sampling_rate
 
-        for i in range(1, len(data) - horizon - 1):
-            slope = data['Prediction'].iloc[i + horizon] - data['Prediction'].iloc[i]
+        for i in range(len(data) - total_offset):
+            future_idx = i + total_offset
+            
+            if pd.isna(data['Prediction'].iloc[i]) or pd.isna(data['Prediction'].iloc[future_idx]):
+                continue  # Saltar si falta alguna predicción
+            
+            slope = data['Prediction'].iloc[future_idx] - data['Prediction'].iloc[i]
             min_slope = data['<CLOSE>'].iloc[i] * spread
 
-            rsi_prev = data['RSI'].iloc[i - 1]
-            rsi_now = data['RSI'].iloc[i]
+            rsi = data['RSI'].iloc[i]
 
-            if (slope > min_slope and rsi_prev < 30 and rsi_now >= 30):
+            if (rsi < 30 and slope > min_slope):
                 signals.iloc[i] = 1
-            elif rsi_now > 70 and slope < -min_slope:
+            elif rsi > 70 and slope < -min_slope:
                 signals.iloc[i] = -1
 
         # Anular señales en días interpolados
@@ -111,7 +113,7 @@ class Strategy:
 
         return signals
 
-    def generate_macd_prediction_signals(self, data, horizon=3, spread=0.0005):
+    def generate_macd_prediction_signals(self, data, sampling_rate=3, horizon=1, spread=0.0005):
         '''MACD + Predicción:
         Entrada si MACD > Señal y predicción es alcista.
         Salida si MACD < Señal.
@@ -122,16 +124,26 @@ class Strategy:
         if 'Prediction' not in data.columns:
             raise ValueError("Falta la columna 'Prediction'.")
 
-        for i in range(1, len(data) - horizon - 1):
-            slope = data['Prediction'].iloc[i + horizon] - data['Prediction'].iloc[i]
+        total_offset = horizon * sampling_rate
+        
+        for i in range(len(data) - total_offset):
+            future_idx = i + total_offset
+
+            if pd.isna(data['Prediction'].iloc[i]) or pd.isna(data['Prediction'].iloc[future_idx]):
+                continue  # Saltar si falta alguna predicción
+            
+            slope = data['Prediction'].iloc[future_idx] - data['Prediction'].iloc[i]
             min_slope = data['<CLOSE>'].iloc[i] * spread
 
-            macd_now = data['MACD'].iloc[i]
-            macd_signal_now = data['MACD_Signal'].iloc[i]
-
-            if slope > min_slope and macd_now > macd_signal_now:
+            macd = data['MACD'].iloc[i]
+            macd_signal = data['MACD_Signal'].iloc[i]
+            print("slope: ", slope)
+            print("min_slope: ", min_slope)
+            print("macd: ", macd)
+            print("macd_signal: ", macd_signal)
+            if slope > min_slope and macd > macd_signal:
                 signals.iloc[i] = 1
-            elif macd_now < macd_signal_now or slope < -min_slope:
+            elif macd < macd_signal or slope < -min_slope:
                 signals.iloc[i] = -1
 
         # Anular señales en días interpolados
@@ -140,7 +152,7 @@ class Strategy:
 
         return signals
 
-    def generate_rsi_macd_prediction_signals(self, data, horizon=3, spread=0.0005):
+    def generate_rsi_macd_prediction_signals(self, data, sampling_rate=3, horizon=1, spread=0.0005):
         '''RSI + MACD + Predicción:
         Entrada si:
             - RSI cruza 30 hacia arriba (confirmado)
@@ -153,24 +165,30 @@ class Strategy:
 
         if 'Prediction' not in data.columns:
             raise ValueError("Falta la columna 'Prediction'.")
+        
+        total_offset = horizon * sampling_rate
 
-        for i in range(1, len(data) - horizon - 1):
-            slope = data['Prediction'].iloc[i + horizon] - data['Prediction'].iloc[i]
+        for i in range(len(data) - total_offset):
+            future_idx = i + total_offset
+            
+            if pd.isna(data['Prediction'].iloc[i]) or pd.isna(data['Prediction'].iloc[future_idx]):
+                continue  # Saltar si falta alguna predicción
+            
+            slope = data['Prediction'].iloc[future_idx] - data['Prediction'].iloc[i]
             min_slope = data['<CLOSE>'].iloc[i] * spread
 
-            rsi_prev = data['RSI'].iloc[i - 1]
-            rsi_now = data['RSI'].iloc[i]
+            rsi = data['RSI'].iloc[i]
 
             macd = data['MACD'].iloc[i]
             macd_signal = data['MACD_Signal'].iloc[i]
 
             if (
                 slope > min_slope and
-                rsi_prev < 30 and rsi_now >= 30 and
+                rsi < 30 and
                 macd > macd_signal
             ):
                 signals.iloc[i] = 1
-            elif (rsi_now > 70 or 
+            elif (rsi > 70 or 
                   macd < macd_signal or 
                   slope < -min_slope
             ):
@@ -181,8 +199,49 @@ class Strategy:
             signals.loc[data['Interpolado'] == True, 'Signal'] = 0
 
         return signals
+    
+    def apply_strategy(self, data, signals, num_operaciones_abiertas, max_operaciones_abiertas=5):
+        """
+        Evalúa la señal más reciente y decide la operación a realizar ("buy", "sell", None),
+        anotándola en signals['Operacion'] y respetando el horario y el límite de operaciones abiertas.
+        """
 
-    def apply_strategy(self, data, signals, max_operaciones_abiertas=5, take_profit=0.02, stop_loss=0.01):
+        operacion = None  # Valor por defecto
+
+        if data.empty or signals.empty:
+            return operacion
+
+        # Último dato disponible
+        ultima_fecha = signals.index[-1]
+        señal = signals['Signal'].iloc[-1]
+        hora_actual = ultima_fecha.time()
+
+        # Verificamos horario permitido
+        hora_inicio = datetime.strptime(self.horario_permitido[0], '%H:%M').time()
+        hora_fin = datetime.strptime(self.horario_permitido[1], '%H:%M').time()
+
+        if hora_inicio <= hora_actual <= hora_fin:
+            if señal == 1 and num_operaciones_abiertas < max_operaciones_abiertas and not self.condicion_abierta:
+                operacion = "buy"
+                signals.at[ultima_fecha, 'Operacion'] = 1
+
+                self.condicion_abierta = True
+            elif señal == -1 and num_operaciones_abiertas > 0:
+                operacion = "sell"
+                signals.at[ultima_fecha, 'Operacion'] = -1
+
+                self.condicion_abierta = False
+            else:
+                signals.at[ultima_fecha, 'Operacion'] = 0
+                
+        else:
+            signals.at[ultima_fecha, 'Operacion'] = 0
+
+            self.condicion_abierta = False
+
+        return operacion
+
+    def simulate_strategy(self, data, signals, max_operaciones_abiertas=5, take_profit=0.02, stop_loss=0.01, sampling_rate=3):
         '''Simula operaciones largas múltiples según señales, ejecutando en el siguiente precio disponible.'''
 
         operaciones = []
@@ -190,11 +249,11 @@ class Strategy:
 
         signals['Operacion'] = 0
 
-        condicion_abierta = False
+        self.condicion_abierta = False
 
         horario_permitido = self.horario_permitido
 
-        for i in range(1, len(data) - 1):  # evitamos el último índice para poder usar i+1
+        for i in range(len(data) - sampling_rate):  # evitamos el último índice para poder usar i + sampling_rate
             señal = signals['Signal'].iloc[i]
 
             precio_actual = data['<CLOSE>'].iloc[i]
@@ -209,7 +268,7 @@ class Strategy:
             if not (hora_inicio <= hora_actual <= hora_fin):
                 continue  # no operamos fuera de horario
 
-            if señal == 1 and len(abiertas) < max_operaciones_abiertas and not condicion_abierta:
+            if señal == 1 and len(abiertas) < max_operaciones_abiertas and not self.condicion_abierta:
                 cantidad_activos = self.capital_por_operacion / precio_actual
 
                 abiertas.append({
@@ -222,7 +281,7 @@ class Strategy:
 
                 signals.at[fecha_actual, 'Operacion'] = 1  
 
-                condicion_abierta = True
+                self.condicion_abierta = True
 
             for operacion in abiertas[:]:
                 stop_loss = operacion['stop_loss_price']
@@ -249,10 +308,12 @@ class Strategy:
 
                     signals.at[fecha_actual, 'Operacion'] = -1
                 
-                    condicion_abierta = False
+                    self.condicion_abierta = False
 
             else:
-                condicion_abierta = False
+                self.condicion_abierta = False
+
+        self.condicion_abierta = False
 
         return operaciones
 
