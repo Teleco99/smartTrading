@@ -1,12 +1,9 @@
-import numpy as np
-import pandas as pd
+from metrics.Metrics import Metrics
 from itertools import product
 
-class Indicators:
-    RISK_PCT = 0.005      # 0.5% de riesgo 
-    RR = 2.0             # 2:1
-    MAX_BARS = 5         # máximo 5 velas abiertas
+import pandas as pd
 
+class Indicators:
     @staticmethod
     def calculate_macd(data, short_window=12, long_window=26, signal_window=9):
         # Recorta las filas sobre las que se va a calcular
@@ -23,8 +20,11 @@ class Indicators:
         data.loc[macd_signal.index, 'MACD_Signal'] = macd_signal
 
     @staticmethod
-    def optimize_macd(data, progress_callback, short_range=[11, 13, 15], long_range=[25, 27, 29], signal_range=[7, 9, 11], verbose=False):
-        max_score = float('-inf')
+    def optimize_macd(data, progress_callback, short_range=range(5, 25), long_range=range(15, 45), signal_range=range(5, 25), verbose=False):
+        MAX_ABIERTAS = 1
+        
+        resultados = []
+
         total = sum(1 for _ in product(short_range, long_range, signal_range))
         completed = 0
 
@@ -33,12 +33,12 @@ class Indicators:
             Indicators.calculate_macd(temp, short_window=short, long_window=long, signal_window=signal)
             temp.dropna(inplace=True)
 
-            if 'Interpolado' not in data.columns:
-                temp['Interpolado'] = False
-
             temp['MACD_prev'] = temp['MACD'].shift(1)
             temp['MACD_Signal_prev'] = temp['MACD_Signal'].shift(1)
-            temp['Entrada'] = 0
+
+            capital_por_operacion = 100
+            abiertas = []
+            operaciones = []
 
             # Detectar posibles entradas
             for i in range(len(temp) - 1):
@@ -47,76 +47,69 @@ class Indicators:
                 macd_now = temp['MACD'].iloc[i]
                 sig_now = temp['MACD_Signal'].iloc[i]
 
-                if macd_prev < sig_prev and macd_now > sig_now:
-                    temp.at[temp.index[i], 'Entrada'] = 1
-                else:
-                    temp.at[temp.index[i], 'Entrada'] = 0
+                # Entrada en sobreventa 
+                if macd_prev < sig_prev and macd_now >= sig_now and len(abiertas) < MAX_ABIERTAS:                    
+                    precio_actual = temp['<CLOSE>'].iloc[i]
+                    fecha_actual = temp.index[i]
+                    cantidad_activos = capital_por_operacion / precio_actual
 
-            # Simulación de trading real
-            temp['TradeReturn'] = 0.0
-            in_trade = False
-            entry_price = 0
-            stop_loss = 0
-            take_profit = 0
+                    abiertas.append({
+                        'compra_fecha': fecha_actual,
+                        'compra_precio': precio_actual,
+                        'cantidad_activos': cantidad_activos
+                    })
 
-            for i in range(len(temp) - 1):
+                    if verbose:
+                        print(f"  ENTRADA  -> {fecha_actual} precio_actual={precio_actual:.5f} len(abiertas)={len(abiertas)}")
 
-                # Entrada real
-                if temp['Entrada'].iloc[i] == 1 and not in_trade:
-                    in_trade = True
-                    entry_price = temp['<CLOSE>'].iloc[i]
-                    stop_loss = entry_price * (1 - Indicators.RISK_PCT)
-                    take_profit = entry_price * (1 + Indicators.RISK_PCT * Indicators.RR)
-                    continue
+                # Salida en sobrecompra
+                if macd_prev > sig_prev and macd_now <= sig_now and len(abiertas) > 0:
+                    operacion = abiertas.pop()
+                    precio_actual = temp['<CLOSE>'].iloc[i]   
+                    fecha_actual = temp.index[i] 
+                    
+                    compra_precio = operacion['compra_precio']
+                    cantidad = operacion['cantidad_activos']
 
-                if not in_trade:
-                    continue
+                    ganancia = (precio_actual - compra_precio) * cantidad
 
-                close = temp['<CLOSE>'].iloc[i]
-                macd_now = temp['MACD'].iloc[i]
-                sig_now = temp['MACD_Signal'].iloc[i]
+                    operaciones.append({
+                        'compra_fecha': operacion['compra_fecha'],
+                        'compra_precio': compra_precio,
+                        'venta_fecha': fecha_actual,
+                        'venta_precio': precio_actual,
+                        'cantidad_activos': cantidad,
+                        'ganancia': ganancia
+                    })
 
-                # Vender en Take Profit
-                if close >= take_profit:
-                    temp.at[temp.index[i], 'TradeReturn'] = (take_profit / entry_price) - 1
-                    in_trade = False
-                    continue
+                    if verbose:
+                        print(f"  SALIDA   -> {fecha_actual} precio_actual={precio_actual:.5f} ganancia={ganancia:.4f} len(operaciones)={len(operaciones)}")
 
-                # Vender en Stop Loss
-                if close <= stop_loss:
-                    temp.at[temp.index[i], 'TradeReturn'] = (stop_loss / entry_price) - 1
-                    in_trade = False
-                    continue
-
-                # Vender en MACD sobrecomprado
-                if macd_now < sig_now:
-                    temp.at[temp.index[i], 'TradeReturn'] = (close / entry_price) - 1
-                    in_trade = False
-                    continue
-
-                temp.at[temp.index[i], 'TradeReturn'] = 0.0
-
-            valid_rows = temp['Interpolado'] != True
-            score = (1 + temp.loc[valid_rows, 'TradeReturn']).prod() - 1
+            metricas = Metrics(operaciones)
+            profit = metricas.profit_factor()
+            numero_operaciones = metricas.numero_de_operaciones()
+            return_factor = metricas.return_factor()
+            ganancia_total = metricas.beneficio_neto()
 
             if verbose: 
-                print(f"MACD probado: short={short}, long={long}, signal={signal}, score={score:.2%}")
+                print(f"MACD probado: short={short}, long={long}, signal={signal}, profit_total={profit:.2}")
 
-            if score >= max_score:
-                best_params = {
-                    'short': short,
-                    'long': long,
-                    'signal': signal,
-                    'max_score': score * 100,   # almacenar como porcentaje
-                }
-                max_score = score
+            resultados.append({
+                'long': long,
+                'short': short,
+                'signal': signal,
+                'profit': profit,
+                'numero_operaciones': numero_operaciones,
+                'return_factor': return_factor,
+                'ganancia_total': ganancia_total
+            })
 
             completed += 1
             progress_callback(completed / total, "Optimizando MACD")
 
-        print(f"🟢 Mejor MACD: Params={best_params}, Score total={max_score:.2%}")
+        df = pd.DataFrame(resultados).sort_values('profit', ascending=False).reset_index(drop=True)
 
-        return best_params
+        return df
 
     @staticmethod
     def calculate_rsi(data, window=14):
@@ -145,7 +138,10 @@ class Indicators:
 
     @staticmethod
     def optimize_rsi(data, progress_callback, window_range=range(9, 19), verbose=False):
-        max_score = float('-inf')
+        MAX_ABIERTAS = 1
+
+        resultados = []
+
         total = len(window_range)
         completed = 0
 
@@ -154,83 +150,73 @@ class Indicators:
             Indicators.calculate_rsi(temp, window=window)
             temp.dropna(inplace=True)
 
-            if 'Interpolado' not in data.columns:
-                temp['Interpolado'] = False
-
             temp['RSI_prev'] = temp['RSI'].shift(1)
-            temp['Entrada'] = 0
+
+            capital_por_operacion = 100
+            abiertas = []
+            operaciones = []
 
             for i in range(len(temp) - 1):  # -1 porque miramos i+1
-                rsi_prev = temp['RSI_prev'].iloc[i]
                 rsi_now = temp['RSI'].iloc[i]
 
-                # Entrada: RSI_PREW < 30 and RSI_NOW >= 30
-                if rsi_prev < 30 and rsi_now >= 30:
-                    temp.at[temp.index[i], 'Entrada'] = 1
-                else:
-                    temp.at[temp.index[i], 'Entrada'] = 0
+                # Entrada en sobreventa (cuando salga de sobreventa)
+                if rsi_now >= 30 and len(abiertas) < MAX_ABIERTAS:
+                    precio_actual = temp['<CLOSE>'].iloc[i]
+                    fecha_actual = temp.index[i]
+                    cantidad_activos = capital_por_operacion / precio_actual
 
-            temp['TradeReturn'] = 0.0
-            in_trade = False
-            entry_price = 0
-            stop_loss = 0
-            take_profit = 0
+                    abiertas.append({
+                        'compra_fecha': fecha_actual,
+                        'compra_precio': precio_actual,
+                        'cantidad_activos': cantidad_activos
+                    })
 
-            for i in range(len(temp) - 1):
-                # Detectar entrada
-                if temp['Entrada'].iloc[i] == 1 and not in_trade:
-                    in_trade = True
-                    entry_price = temp['<CLOSE>'].iloc[i]
-                    stop_loss = entry_price * (1 - Indicators.RISK_PCT)
-                    take_profit = entry_price * (1 + Indicators.RISK_PCT * Indicators.RR)
-                    continue
+                    if verbose:
+                        print(f"  ENTRADA  -> {fecha_actual} precio_actual={precio_actual:.5f} len(abiertas)={len(abiertas)}")
 
-                if not in_trade:
-                    continue
+                # Salida en sobrecompra (cuando salga de sobrecompra) si tenemos operación abierta
+                if rsi_now <= 70 and len(abiertas) > 0:
+                    operacion = abiertas.pop()
+                    precio_actual = temp['<CLOSE>'].iloc[i]   
+                    fecha_actual = temp.index[i] 
+                    
+                    compra_precio = operacion['compra_precio']
+                    cantidad = operacion['cantidad_activos']
 
-                # Datos de la siguiente vela
-                close = temp['<CLOSE>'].iloc[i]
-                rsi_now = temp['RSI'].iloc[i]
+                    ganancia = (precio_actual - compra_precio) * cantidad
 
-                # Vender en Take Profit
-                if close >= take_profit:
-                    exit_price = temp['<CLOSE>'].iloc[i]
-                    temp.at[temp.index[i], 'TradeReturn'] = (take_profit / entry_price) - 1
-                    in_trade = False
-                    continue
+                    operaciones.append({
+                        'compra_fecha': operacion['compra_fecha'],
+                        'compra_precio': compra_precio,
+                        'venta_fecha': fecha_actual,
+                        'venta_precio': precio_actual,
+                        'cantidad_activos': cantidad,
+                        'ganancia': ganancia
+                    })
 
-                # Vender en Stop Loss
-                if close <= stop_loss:
-                    exit_price = temp['<CLOSE>'].iloc[i]
-                    temp.at[temp.index[i], 'TradeReturn'] = (stop_loss / entry_price) - 1
-                    in_trade = False
-                    continue
+                    if verbose:
+                        print(f"  SALIDA   -> {fecha_actual} precio_actual={precio_actual:.5f} ganancia={ganancia:.4f} len(operaciones)={len(operaciones)}")
 
-                # Vender en RSI sobrecomprado
-                if rsi_now > 70:
-                    exit_price = temp['<CLOSE>'].iloc[i]
-                    temp.at[temp.index[i], 'TradeReturn'] = (exit_price / entry_price) - 1
-                    in_trade = False
-                    continue
+            metricas = Metrics(operaciones)
+            profit = metricas.profit_factor()
+            numero_operaciones = metricas.numero_de_operaciones()
+            return_factor = metricas.return_factor()
+            ganancia_total = metricas.beneficio_neto()
 
-                temp.at[temp.index[i], 'TradeReturn'] = 0.0
-
-            valid_rows = temp['Interpolado'] != True
-            score = (1 + temp.loc[valid_rows, 'TradeReturn']).prod() - 1
+            resultados.append({
+                'window': window,
+                'profit': profit,
+                'numero_operaciones': numero_operaciones,
+                'return_factor': return_factor,
+                'ganancia_total': ganancia_total
+            })
 
             if verbose:
-                print(f"RSI probado: window={window}, score={score:.2%}")
-
-            if score >= max_score:
-                best_params = {
-                    'window': window,
-                    'max_score': score * 100,   # almacenar como porcentaje
-                }
-                max_score = score
+                print(f"RSI probado: window={window}, profit_total={profit:.2}")
 
             completed += 1
             progress_callback(completed / total, "Optimizando RSI")
 
-        print(f"🟢 Mejor RSI: {best_params}")
+        df = pd.DataFrame(resultados).sort_values('profit', ascending=False).reset_index(drop=True)
 
-        return best_params
+        return df

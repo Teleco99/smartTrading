@@ -1,19 +1,53 @@
 import plotly.graph_objects as go
+import pandas as pd
+import numpy as np
 
 from plotly.subplots import make_subplots
 
 class Visualizer:
+    @staticmethod
+    def time_to_decimal(t):
+        return t.hour + t.minute / 60
 
     @staticmethod
     def plot_interactive_price(data):
+        # start_h = Visualizer.time_to_decimal(start_time)  
+        # end_h = Visualizer.time_to_decimal(end_time)
+
+        dates = data.index.normalize().unique()
+        all_days = pd.date_range(dates.min(), dates.max(), freq="D")
+        missing_days = all_days.difference(dates)
+        nan_rows = pd.DataFrame(
+            {'<CLOSE>': np.nan},
+            index=missing_days
+        )
+        data_plot = pd.concat([data, nan_rows]).sort_index()
+
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=data.index, y=data['<CLOSE>'], mode='lines', name='Precio'))
+        fig.add_trace(go.Scatter(x=data_plot.index, y=data_plot['<CLOSE>'], mode='lines', name='Precio', connectgaps=False))
         fig.update_layout(title="Visualización de precios", xaxis_title="Fecha", yaxis_title="Precio")
+
+        # Quitamos horas fuera de mercado
+        # fig.update_xaxes(
+        #     rangebreaks=[
+        #         dict(bounds=[end_h, start_h], pattern="hour")
+        #     ]
+        # )
 
         return fig
     
     @staticmethod
     def plot_interactive_combined(data, signals=None, operaciones=[], title="Análisis interactivo"):
+        # Introducimos Nan en días festivos para evitar interpolación
+        dates = data.index.normalize().unique()
+        all_days = pd.date_range(dates.min(), dates.max(), freq="D")
+        missing_days = all_days.difference(dates)
+        nan_rows = pd.DataFrame(
+            {'<CLOSE>': np.nan, 'Prediction': np.nan},
+            index=missing_days
+        )
+        data_plot = pd.concat([data, nan_rows]).sort_index()
+
         # Detectar qué indicadores están presentes
         tiene_rsi = 'RSI' in data.columns and data['RSI'].notna().any()
         tiene_macd = 'MACD' in data.columns and data['MACD'].notna().any() and 'MACD_Signal' in data.columns
@@ -34,15 +68,13 @@ class Visualizer:
 
         # === Precio ===
         fig.add_trace(go.Scatter(
-            x=data.index, y=data['<CLOSE>'],
+            x=data_plot.index, y=data_plot['<CLOSE>'],
             name='Precio',
             line=dict(color='blue')
         ), row=row, col=1)
         
-        if 'Prediction' in data.columns:
-            pred_series = data['Prediction'].dropna()
-            print(pred_series.index)
-            print(pred_series.values)
+        if 'Prediction' in data_plot.columns:
+            pred_series = data_plot['Prediction']
             fig.add_trace(go.Scatter(
                 x=pred_series.index, 
                 y=pred_series.values,
@@ -57,15 +89,15 @@ class Visualizer:
 
             fig.add_trace(go.Scatter(
                 x=buy_ops.index,
-                y=data.loc[buy_ops.index, '<CLOSE>'],
+                y=data_plot.loc[buy_ops.index, '<CLOSE>'],
                 mode='markers',
-                name='Señal de compra',
+                name='Compra',
                 marker=dict(color='green', symbol='triangle-up', size=10)
             ), row=row, col=1)
 
             fig.add_trace(go.Scatter(
                 x=sell_ops.index,
-                y=data.loc[sell_ops.index, '<CLOSE>'],
+                y=data_plot.loc[sell_ops.index, '<CLOSE>'],
                 mode='markers',
                 name='Venta',
                 marker=dict(color='red', symbol='triangle-down', size=10)

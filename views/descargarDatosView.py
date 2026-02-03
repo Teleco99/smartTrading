@@ -73,14 +73,23 @@ symbol = SYMBOL_MAP[selection]
 
 timeframe = st.selectbox(
     "Temporalidad",
-    options=["1m", "5m", "15m", "30m", "1h", "1d"], 
+    options=["5m", "15m", "1h", "1d"], 
     index=1
 )
 
 # Seleccionar mes (opciones predefinidas)
-año_actual = datetime.now().year
-mes_actual = datetime.now().month
-meses_disponibles = [f"{año_actual}-{m:02d}" for m in range(1, mes_actual + 1)]
+hoy = datetime.now()
+
+meses_disponibles = []
+for i in range(3):  # actual + 2 anteriores
+    mes = hoy.month - i
+    año = hoy.year
+
+    if mes <= 0:
+        mes += 12
+        año -= 1
+
+    meses_disponibles.append(f"{año}-{mes:02d}")
 
 year_month = st.selectbox(
     "Mes completo:",
