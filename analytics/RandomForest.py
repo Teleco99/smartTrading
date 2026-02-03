@@ -1,9 +1,10 @@
-import numpy as np
-import warnings
 from sklearn.ensemble import RandomForestRegressor
 from metrics.ErrorMetrics import ErrorMetrics
 from sklearn.exceptions import DataConversionWarning
 
+import pandas as pd
+import numpy as np
+import warnings
 
 class RandomForest:
     '''Modelo de regresión basado en Random Forest usando solo precios.'''
@@ -21,12 +22,13 @@ class RandomForest:
 
         warnings.filterwarnings(action='ignore', category=DataConversionWarning)
 
-    def _build_model(self):
+    def _build_model(self, warm_start=False):
         '''Inicializa el modelo Random Forest.'''
         model = RandomForestRegressor(
             n_estimators=self.n_estimators,
             max_depth=self.max_depth,
             min_samples_split=self.min_samples_split,
+            warm_start=warm_start,
             random_state=42
         )
 
@@ -53,7 +55,6 @@ class RandomForest:
     
     def train(self, X_data, y_data):
         '''Entrena el modelo con las ventanas generadas.'''
-
         if len(X_data) > 0:
             self.model.fit(X_data, y_data)
         else:
@@ -61,26 +62,30 @@ class RandomForest:
 
     def predict(self, window):
         '''Predice el próximo valor usando la ventana de entrada.'''
-        # Asegurar que la ventana esté en el formato correcto para el modelo (downsampling)
-        sampled_window = window[::self.sampling_rate][-self.window:]
-        sampled_window = np.array(sampled_window).reshape(1, -1)  # Convertir la ventana en array 2D
+        # Soporta entrada individual (1D) o batch (iterable de ventanas)
+        arr = np.array(window)
 
-        # Obtener la predicción para esta ventana
-        prediction = self.model.predict(sampled_window)
+        # Entrada 1D -> devolver un escalar
+        if arr.ndim == 1:
+            sampled_window = arr[::self.sampling_rate][-self.window:]
+            sampled_window = np.array(sampled_window).reshape(1, -1)
+            prediction = self.model.predict(sampled_window)
+            return prediction[0]
 
-        return prediction[0]
+        # Entrada 2D -> batch
+        sampled_batch = np.array([np.array(w)[::self.sampling_rate][-self.window:] for w in arr])
+        preds = self.model.predict(sampled_batch)
+        return preds
 
-    def optimize(self, data, progress_callback, data_callback=None,
-                 window_sizes=[8], buffer_sizes=[64],
-                 estimator_options=[400], depth_options=[5], sample_split_options=[5],
-                 sampling_rate=3, horizon=1, verbose=False):
+    def optimize(self, data, progress_callback, data_callback=None, 
+                 buffer_sizes=range(100, 500, 50), window_sizes=[1, 2, 4], 
+                 estimator_options=[250, 500], depth_options=[4, 5, 6], sample_split_options=[2],
+                 frecuencia_reentrenamiento=24, sampling_rate=3, horizon=1, verbose=False):
         '''Optimizar hiperparámetros con división secuencial del conjunto de datos'''
-        best_rmse = float('inf')
-        best_params = {}
+        resultados = []
 
         completed = 0
-        total = (len(window_sizes) * len(buffer_sizes) * 
-                len(estimator_options) * len(depth_options) * len(sample_split_options)) 
+        total = len(buffer_sizes) * len(window_sizes) * len(estimator_options) * len(depth_options) * len(sample_split_options) 
 
         # Para no saturar: usar máximo 2000 datos
         data_array = data['<CLOSE>'].values[-2000:]
@@ -90,11 +95,9 @@ class RandomForest:
         train_data = data_array[:split_index]
         val_data = data_array[split_index:]
 
-        for window in window_sizes:
-            self.window = window
-
-            for buffer in buffer_sizes:
-                self.buffer_size = buffer
+        for buffer in buffer_sizes:
+            for window in window_sizes:
+                self.window = window
 
                 for n_est in estimator_options:
                     self.n_estimators = n_est
@@ -103,90 +106,87 @@ class RandomForest:
                         self.max_depth = depth
 
                         for sample_split in sample_split_options:
-                            self.min_samples_split = sample_split
+                            progress_callback(completed / total, f"🔎 Optimizando Random Forest: Probando combinación {completed} de {total}")
 
+                            self.min_samples_split = sample_split
                             self.model = self._build_model()
 
+                            if len(train_data) < window * sampling_rate + 100:
+                                print(f"❌ Random Forest sin suficientes puntos: train_data={len(train_data)}")
+                                completed += 1
+                                continue
+
+                            if len(val_data) < window * sampling_rate + horizon:
+                                print(f"❌ Random Forest sin suficientes puntos: val_data={len(val_data)} (warmup insuficiente)")
+                                completed += 1
+                                continue
+
                             y_pred_list = []
-                            y_test_list = []
+                            y_val_list = []
 
-                            # Total de pasos en la simulación en tiempo real
-                            steps = len(val_data)
+                            full_window = window * sampling_rate
 
-                            # Validar en validation pero empezando desde los ultimos training
-                            for i in range(steps):
-                                if len(train_data) < buffer:
-                                    print(f"❌ Random Forest sin suficientes puntos: train_data={len(train_data)}, buffer={buffer}")
-                                    continue
-                        
-                                # Número real de puntos a coger
-                                train_size = window * sampling_rate + buffer
+                            train_size = window * sampling_rate + buffer
+                            current_train_data = train_data[-train_size:]
 
-                                # Coger últimos puntos de training + inicio de test
-                                train_window = train_data[-train_size + i:]
-                                val_window = val_data[:i + horizon]
+                            # Preparar entradas y salidas de datos de entrenamiento
+                            X_train, y_train = self.prepare_data(data=current_train_data, window=window)
 
-                                # Concatenarlos
-                                current_data = np.concatenate([train_window, val_window])
+                            # Entrenar
+                            self.train(X_train, y_train)
 
-                                # Entrenamiento solo con datos anteriores al objetivo   
-                                current_train_data = current_data[:-horizon]
+                            # Validar
+                            end_limit = len(val_data) - horizon + 1
+                            for i in range(full_window, end_limit):
+                                # Reentreno cada frecuencia_reentrenamiento
+                                if frecuencia_reentrenamiento != 0 and i % frecuencia_reentrenamiento == 0:
+                                    # Datos disponibles hasta ahora
+                                    available = np.concatenate([train_data, val_data[:i]])
+                                    current_train_data = available[-train_size:]
 
-                                # Preparar entradas (ventanas) sobre esos datos
-                                X_train, y_train = self.prepare_data(data=current_train_data, window=window)
+                                    X_train, y_train = self.prepare_data(data=current_train_data, window=window)
+                                    
+                                    self.train(X_train, y_train)
 
-                                # Entrenar
-                                self.train(X_train, y_train)
+                                last_input = val_data[i - full_window : i]
+                                y_true = val_data[i + horizon - 1]
 
-                                # Preparar ventana para predicción del siguiente valor
-                                last_input = current_data[-(window * sampling_rate + horizon) : -horizon]  # Última ventana de entrada
-                                y_true = current_data[-1]
-                                
                                 y_pred = self.predict(last_input)
                                 
                                 # Guardar resultados
-                                y_pred_list.append(y_pred)
-                                y_test_list.append(y_true)
+                                y_pred_list.append(y_pred[0] if isinstance(y_pred, np.ndarray) else y_pred)
+                                y_val_list.append(y_true)
 
-                                # Asegurar que la ventana esté en el formato correcto para imprimir
-                                sampled_window = last_input[::self.sampling_rate][-self.window:]
-                                sampled_window = np.array(sampled_window).reshape(1, -1)  # Convertir la ventana en array 2D
-
-                                # Mostrar datos de entrenamiento por pantalla
-                                if verbose and i==5 and data_callback is not None:
-                                    print(f" Calculando predicción con len(window)={self.window}, len(last_input)={len(last_input)}, len(current_train_data)={len(current_train_data)}")
-                                    data_callback("entrenamiento", i, X_train, y_train)
-                                    data_callback("validacion", i, sampled_window, y_pred)
-                                    data_callback("errores (entrada=predicción, salida=reales)", i, y_pred_list, y_test_list)
-                                
-                            if len(y_pred_list) > 0 and len(y_test_list) > 0:
+                            if len(y_pred_list) > 0 and len(y_val_list) > 0:
                                 # Calcular error
-                                error_metrics = ErrorMetrics(y_test_list, y_pred_list)
-                                avg_rmse = error_metrics.rmse()
+                                error_metrics = ErrorMetrics(y_val_list, y_pred_list)
+                                rmse = error_metrics.rmse()
+                                directional_acc_thr = error_metrics.directional_accuracy_price_thr(eps=100.0)
+                                directional_acc_quantile = error_metrics.directional_accuracy_price_quantile(q=0.8)
 
-                                if avg_rmse < best_rmse:
-                                    best_rmse = avg_rmse
-                                    best_params = {
-                                        'buffer': buffer,
-                                        'window': window,
-                                        'n_estimators': n_est,
-                                        'max_depth': depth,
-                                        'min_sample_split': sample_split,
-                                        'best_rmse': best_rmse,
-                                    }
+                                resultados.append({
+                                    'buffer': buffer,
+                                    'window': window,
+                                    'n_estimators': n_est,
+                                    'max_depth': depth,
+                                    'min_samples_split': sample_split,
+                                    'rmse': rmse,
+                                    'directional_accuracy_thr': directional_acc_thr,
+                                    'directional_accuracy_quantile': directional_acc_quantile,
+                                })
 
                                 if verbose:
-                                    print(f" Random Forest probada: buffer={buffer}, window={window}, n_estimators={n_est}, max_depth={depth}, min_sample_split={sample_split}, avg_rmse={avg_rmse:.4}")
+                                    print(f"✅ Random Forest probada: window={window}, n_estimators={n_est}, max_depth={depth}, min_sample_split={sample_split}, rmse={rmse:.4f}")
+                                    print(f"Tamaño predicción: y_pred_list={len(y_pred_list)}")
                             else:
-                                avg_rmse = float('inf')
-                                print(f"❌ Random Forest sin suficientes puntos: buffer={buffer}, window={window}, n_estimators={n_est}, max_depth={depth}, min_sample_split={sample_split}, avg_rmse={avg_rmse:.4}")
+                                rmse = float('inf')
+                                print(f"❌ Random Forest sin suficientes puntos: window={window}, n_estimators={n_est}, max_depth={depth}, min_sample_split={sample_split}, rmse={rmse:.4f}")
 
                             completed += 1
-                            progress_callback(completed / total, f"🔎 Optimizando red neuronal: Probando combinación {completed} de {total} datos")
 
-        print(f'🟢 Mejor Random Forest: {best_params}')
-
-        return best_params
+        df = pd.DataFrame(resultados).sort_values('rmse', ascending=True).reset_index(drop=True)
+ 
+        return df
 
 
 

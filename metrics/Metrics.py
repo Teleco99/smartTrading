@@ -1,7 +1,7 @@
 import pandas as pd
 
 class Metrics:
-    def __init__(self, resultados, capital_por_operacion=100):
+    def __init__(self, resultados, capital_por_operacion=1000):
         # Lista de operaciones simuladas y capital invertido en cada una
         self.resultados = resultados
         self.capital_por_operacion = capital_por_operacion
@@ -17,6 +17,10 @@ class Metrics:
     def balance_final(self):
         # Balance final = capital invertido + beneficio neto obtenido
         return self.balance_inicial() + self.beneficio_neto()
+    
+    def numero_de_operaciones(self):
+        # Total de operaciones simuladas
+        return len(self.resultados)
 
     def profit_factor(self):
         # Suma de ganancias positivas
@@ -26,14 +30,18 @@ class Metrics:
         suma_ganancias = sum(ganancias)
         suma_perdidas = sum(perdidas)
 
-        # Si no hay pérdidas, el PF es 1 por defecto para evitar división por cero
+        # Si no hay pérdidas, el PF es infinito
         if suma_perdidas == 0:
-            return float(1)
+            return float("inf") if suma_ganancias > 0 else 1.0
+        
         return suma_ganancias / suma_perdidas
-
-    def numero_de_operaciones(self):
-        # Total de operaciones simuladas
-        return len(self.resultados)
+    
+    def return_factor(self):
+        # Balance final = capital invertido + beneficio neto obtenido
+        if self.balance_inicial() == 0 or self.balance_final() == 0:
+            return 0
+        else:
+            return self.balance_final() / self.balance_inicial()
 
     def drawdown_maximo(self):
         # Ganancias acumuladas a lo largo del tiempo
@@ -72,8 +80,9 @@ class Metrics:
         return {
             'Balance Inicial (€)': self.balance_inicial(),
             'Balance Final (€)': self.balance_final(),
-            'Profit Factor': self.profit_factor(),
             'Número de Operaciones': self.numero_de_operaciones(),
+            'Return Factor': self.return_factor(),
+            'Profit Factor': self.profit_factor(),
             'Drawdown Máximo (€)': self.drawdown_maximo(),
             'Beneficio Neto (€)': self.beneficio_neto(),
             'Beneficio Promedio por Operación (€)': self.beneficio_promedio_por_operacion(),

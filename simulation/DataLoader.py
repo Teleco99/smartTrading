@@ -20,13 +20,12 @@ class DataLoader:
         # Generar un índice con intervalos regulares de 5 minutos
         regular_index = pd.date_range(start=start, end=end, freq=self.freq)
 
-        # Reindexar y crear marcador de interpolación
+        # Reindexar y eliminar velas sin precio real
         self.data = self.data.reindex(regular_index)
-
-        self.data['Interpolado'] = self.data['<CLOSE>'].isna()
+        self.data = self.data.dropna(subset=['<CLOSE>'])
 
         # Interpolar los valores faltantes
-        self.data = self.data.interpolate(method='linear')
+        #self.data = self.data.interpolate(method='linear')
 
     def get_filtered_data(self, start_date, end_date):
         return self.data.loc[start_date:end_date].copy()

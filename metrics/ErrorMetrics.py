@@ -38,6 +38,68 @@ class ErrorMetrics:
         diff = np.abs(self.actual - self.predicted) / denominator
         diff[denominator == 0] = 0  # Manejo de división por cero
         return 2 * np.mean(diff) * 100
+    
+    def directional_accuracy_price_thr(self, H=3, eps=0.0):
+        """
+        Directional Accuracy con umbral eps, cuando self.actual y self.predict son PRECIOS
+        del objetivo (t+H) alineados.
+
+        H: offset real (horizon * sampling_rate)
+        eps: umbral (en unidades de precio) para considerar lateral (0)
+        """
+        y_true_future = np.asarray(self.actual).reshape(-1)
+        y_pred_future = np.asarray(self.predicted).reshape(-1)
+
+        if len(y_true_future) != len(y_pred_future):
+            raise ValueError("self.actual y self.predict deben tener la misma longitud")
+        if H <= 0 or H >= len(y_true_future):
+            raise ValueError("H debe ser > 0 y menor que la longitud de los arrays")
+
+        # Precio base (t) correspondiente a cada objetivo (t+H)
+        current = y_true_future[:-H]
+
+        # Objetivo real y predicho en (t+H)
+        y_true = y_true_future[H:]
+        y_pred = y_pred_future[H:]
+
+        # Movimientos (respecto a current)
+        real_move = y_true - current
+        pred_move = y_pred - current
+
+        # Direcciones con umbral
+        real_dir = np.where(real_move > eps, 1, np.where(real_move < -eps, -1, 0))
+        pred_dir = np.where(pred_move > eps, 1, np.where(pred_move < -eps, -1, 0))
+
+        return float(np.mean(real_dir == pred_dir))
+
+    def directional_accuracy_price_quantile(self, H=3, q=0.8):
+        y_true_future = np.asarray(self.actual).reshape(-1)
+        y_pred_future = np.asarray(self.predicted).reshape(-1)
+
+        if len(y_true_future) != len(y_pred_future):
+            raise ValueError("self.actual y self.predict deben tener la misma longitud")
+        if H <= 0 or H >= len(y_true_future):
+            raise ValueError("H debe ser > 0 y menor que la longitud de los arrays")
+
+        # Precio base (t) correspondiente a cada objetivo (t+H)
+        current = y_true_future[:-H]
+
+        # Objetivo real y predicho en (t+H)
+        y_true = y_true_future[H:]
+        y_pred = y_pred_future[H:]
+
+        # Movimientos (respecto a current)
+        real_move = y_true - current
+        pred_move = y_pred - current
+        
+        abs_pred = np.abs(pred_move)
+        threshold = np.quantile(abs_pred, q)
+
+        mask = abs_pred >= threshold
+        if mask.sum() == 0:
+            return np.nan
+
+        return np.mean(np.sign(real_move[mask]) == np.sign(pred_move[mask]))
 
     def get_all_metrics(self):
         """Retorna todas las métricas de error."""

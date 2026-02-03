@@ -1,7 +1,0 @@
-{
-  "buffer": 100,
-  "window": 1,
-  "neurons": 64,
-  "learning_rate": 0.0005,
-  "batch_size": 4
-}

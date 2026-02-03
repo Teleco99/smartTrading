@@ -1,9 +1,9 @@
 from simulation.DataLoader import DataLoader
 from simulation.OptimizerController import OptimizerController
 from simulation.Visualizer import Visualizer
+from datetime import timedelta
+
 import streamlit as st
-import datetime as dt
-import json
 import os
 import pandas as pd
 import numpy as np
@@ -89,13 +89,43 @@ freq_map = {
 }
 
 
-st.title("Optimización de Indicadores Predictivos")
-
-tecnica = st.selectbox("Selecciona indicador a optimizar:", ["RSI", "MACD", "Regresión Lineal", "Red Neuronal", "Random Forest"])
+st.title("Optimización de Indicadores y Modelos de Trading")
 
 col1, col2 = st.columns([2, 1])
 with col2:
     selected_freq = st.selectbox("Temporalidad:", ["5min", "15min", "1h", "1D"], index=1)
+
+tecnica = st.selectbox("Selecciona indicador o modelo a optimizar:", ["RSI", "MACD", "Regresión Lineal", "Red Neuronal", "Random Forest"])
+
+if tecnica != "RSI" and tecnica != "MACD":
+    match selected_freq:
+        case "5min":
+            unidad = "horas"
+            min_freq = 4
+        case "15min":
+            unidad = "horas"
+            min_freq = 8
+        case "1h":
+            unidad = "horas"
+            min_freq = 24
+        case "1D":
+            unidad = "días"
+            min_freq = 24
+
+    hay_reentreno = st.checkbox("Habilitar reentrenamiento periódico del modelo", value=True)
+    if hay_reentreno:
+        frecuencia_reentrenamiento = st.number_input(f"Frecuencia de reentrenamiento ({unidad})", min_value=min_freq, value=min_freq, step=1)
+
+        # Transformamos frecuencia de unidad a número de puntos
+        match selected_freq:
+            case "5min":
+                frecuencia_reentrenamiento = frecuencia_reentrenamiento * 12
+            case "15min":
+                frecuencia_reentrenamiento = frecuencia_reentrenamiento * 4
+    else:
+        frecuencia_reentrenamiento = 0
+else:
+    frecuencia_reentrenamiento = 0
 
 # Convertimos la temporalidad seleccionada al código que aparece en los nombres de archivo
 freq_code = freq_map[selected_freq]
@@ -111,36 +141,43 @@ csv_files = [
 with col1:
     selected_file = st.selectbox("Selecciona archivo:", csv_files)
 
-col1, col2 = st.columns(2)
-with col1:
-    start_time = st.time_input("Hora de apertura", value=dt.time(13, 30))
-with col2:
-    end_time = st.time_input("Hora de cierre", value=dt.time(20, 0))
-
 # Cargar datos
 if selected_file:
     file_path = os.path.join(data_folder, selected_file)
-    loader = DataLoader(file_path, freq=selected_freq)
-    loader.load_data()
-    st.success(f"{selected_file} cargado correctamente")
+    data_loader = DataLoader(file_path, freq=selected_freq)
+    data_loader.load_data()
 
-    if loader.data is not None:
+    if data_loader.data is not None:
         # Rango de fechas disponibles
-        start_date = loader.data.index.min()
-        end_date = loader.data.index.max()
+        start_date = data_loader.data.index.min()
+        end_date = data_loader.data.index.max()
+
+        # Asegura que el índice sea datetime
+        idx = pd.to_datetime(data_loader.data.index)
+
+        min_dt = idx.min().to_pydatetime()
+        max_dt = idx.max().to_pydatetime()
+
+        # Calcula el punto 70% del rango
+        min_date = min_dt.date()
+        max_date = max_dt.date()
+
+        total_days = (max_date - min_date).days
+        split_days = int(total_days * 0.7)          # entero
+        training_end_default = min_date + timedelta(days=split_days)
 
         col1, col2 = st.columns(2)
         with col1:
             fecha_inicio = st.date_input("Desde", value=start_date.date(), min_value=start_date.date(), max_value=end_date.date())
         with col2:
-            fecha_fin = st.date_input("Hasta", value=end_date.date(), min_value=start_date.date(), max_value=end_date.date())
+            fecha_fin = st.date_input("Hasta", value=training_end_default, min_value=start_date.date(), max_value=end_date.date())
 
         # Filtro y validación
-        filtered = loader.get_filtered_data(fecha_inicio, fecha_fin)
-        filtered = filtered.between_time(start_time.strftime("%H:%M"), end_time.strftime("%H:%M"))
+        filtered = data_loader.get_filtered_data(fecha_inicio, fecha_fin)
 
-        if len(filtered) < 100:
-            st.error("⚠️ Se requieren al menos 100 datos para optimizar")
+        min_points = max(frecuencia_reentrenamiento * 10, 240)
+        if len(filtered) < min_points:
+            st.error(f"⚠️ Se requieren al menos {min_points} puntos para optimizar")
         else:
             st.plotly_chart(Visualizer.plot_interactive_price(filtered), use_container_width=True)
             st.success(f"{len(filtered)} puntos disponibles para optimización")
@@ -150,28 +187,26 @@ if selected_file:
 
             if st.button("Optimizar"):
                 with st.spinner("Optimizando..."):
-
                     if tecnica == "RSI":
-                        result = OptimizerController.optimize_rsi(filtered, progress_callback=streamlit_progress)
+                        optimize_result = OptimizerController.optimize_rsi(filtered, progress_callback=streamlit_progress)
                     elif tecnica == "MACD":
-                        result = OptimizerController.optimize_macd(filtered, progress_callback=streamlit_progress)
+                        optimize_result = OptimizerController.optimize_macd(filtered, progress_callback=streamlit_progress)
                     elif tecnica == "Regresión Lineal":
-                        result = OptimizerController.optimize_regression(filtered, progress_callback=streamlit_progress, data_callback=data_callback)
+                        optimize_result = OptimizerController.optimize_regression(filtered, progress_callback=streamlit_progress, data_callback=None, frecuencia_reentrenamiento=frecuencia_reentrenamiento)
                     elif tecnica == "Red Neuronal":
-                        result = OptimizerController.optimize_neural_network(filtered, progress_callback=streamlit_progress, data_callback=data_callback)
+                        optimize_result = OptimizerController.optimize_neural_network(filtered, progress_callback=streamlit_progress, data_callback=None, frecuencia_reentrenamiento=frecuencia_reentrenamiento)
                     elif tecnica == "Random Forest":
-                        result = OptimizerController.optimize_random_forest(filtered, progress_callback=streamlit_progress, data_callback=data_callback)
-
+                        optimize_result = OptimizerController.optimize_random_forest(filtered, progress_callback=streamlit_progress, data_callback=None, frecuencia_reentrenamiento=frecuencia_reentrenamiento)
                     progress_placeholder.empty()
-                    st.write("📊 Resultado óptimo:", format_result_dict(result))
+                    st.subheader("📊 Resultado óptimo:")
+                    st.dataframe(optimize_result)
 
                     # Guardar resultados
                     os.makedirs("optimizaciones", exist_ok=True)
-                    file_name = f"{os.path.splitext(selected_file)[0]}_{tecnica.replace(' ', '_')}.json"
+                    file_name = f"{os.path.splitext(selected_file)[0]}_{tecnica.replace(' ', '_')}.csv"
                     path = os.path.join("optimizaciones", file_name)
 
-                    with open(path, 'w') as f:
-                        json.dump(result, f, indent=2)
-
+                    optimize_result.to_csv(path, index=False)
                     st.success(f"✅ Resultado guardado como '{file_name}' en la carpeta 'optimizaciones'")
+
 

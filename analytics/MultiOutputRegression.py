@@ -3,6 +3,7 @@ from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
 
+import pandas as pd
 import numpy as np
 
 class MultiOutputRegression:
@@ -55,11 +56,10 @@ class MultiOutputRegression:
 
     @staticmethod
     def optimize(data, progress_callback, data_callback=None, 
-                 window_sizes=[6, 9, 12], buffer_sizes=[12, 24, 36], 
-                 sampling_rate=3, horizon=1, verbose=False):
+                 window_sizes=range(1, 10), buffer_sizes=range(100, 500, 10),
+                 frecuencia_reentrenamiento=24, sampling_rate=3, horizon=1, verbose=False):
         '''Optimiza window y buffer evaluando rolling forecasts sobre training/validation split.'''
-        best_score = float('inf')
-        best_params = {}
+        resultados = []
 
         completed = 0
         total = len(window_sizes) * len(buffer_sizes)
@@ -74,75 +74,81 @@ class MultiOutputRegression:
 
         for window in window_sizes:
             for buffer in buffer_sizes:
-                    if len(train_data) < window + horizon:
+                    progress_callback(completed / total, f"🔎 Optimizando regresión: Probando combinación {completed} de {total}")
+
+                    if len(train_data) < window * sampling_rate + buffer:
+                        print(f"❌ Regresión Lineal sin suficientes puntos: train_data={len(train_data)}, buffer={buffer}")
+                        continue
+
+                    if len(val_data) < window * sampling_rate + horizon:
+                        print(f"❌ Regresión Lineal sin suficientes puntos: val_data={len(val_data)} (warmup insuficiente)")
                         continue
 
                     model = MultiOutputRegression(window=window, sampling_rate=sampling_rate)
 
                     y_pred_list = []
-                    y_test_list = []
+                    y_val_list = []
 
-                    # Total de pasos en la simulación en tiempo real
-                    steps = len(val_data)
+                    train_size = window * sampling_rate + buffer
+                    current_train_data = train_data[-train_size:]
 
-                    # Validar en validation pero empezando desde los ultimos training
-                    for i in range(steps):
-                        if i % 10 == 0:
-                            progress_callback(completed / total, f"🔎 Optimizando regresión: Window {window}: {i}/{steps}")
+                    # Preparar entradas y salidas de datos de entrenamiento
+                    X_train, y_train = MultiOutputRegression.prepare_data(data=current_train_data, window=window, sampling_rate=sampling_rate)
+                    
+                    # Entrenar
+                    model.train(X_train, y_train)
+                    
+                    # Validar
+                    end_limit = len(val_data) - horizon + 1
+                    for i in range(window * sampling_rate, end_limit):
+                        # Reentrenamos tras cada frecuencia de reentrenamiento
+                        if frecuencia_reentrenamiento != 0 and i % frecuencia_reentrenamiento == 0:
+                            # Datos disponibles hasta ahora
+                            available = np.concatenate([train_data, val_data[:i]])
+                            current_train_data = available[-train_size:]
+                            
+                            X_train, y_train = MultiOutputRegression.prepare_data(data=current_train_data, window=window, sampling_rate=sampling_rate)  
 
-                        # Número real de puntos a coger
-                        train_size = window * sampling_rate + buffer
+                            model.train(X_train, y_train)
 
-                        # Coger últimos puntos de training + inicio de test
-                        train_window = train_data[-train_size + i:]
-                        val_window = val_data[:i + horizon]
+                        last_input = val_data[i - (window * sampling_rate): i]   
+                        y_true = val_data[i + horizon - 1]
 
-                        # Concatenarlos
-                        current_data = np.concatenate([train_window, val_window])
-
-                        # Entrenamiento solo con datos anteriores al objetivo   
-                        current_train_data = current_data[:-horizon]
-
-                        # Preparar entradas (ventanas) sobre esos datos
-                        X_train, y_train = MultiOutputRegression.prepare_data(data=current_train_data, window=window, sampling_rate=sampling_rate)
-                        
-                        # Entrenar
-                        model.train(X_train, y_train)
-
-                        # Preparar ventana para predicción del siguiente valor
-                        last_input = current_data[-(window * sampling_rate + horizon) : -horizon]  # Última ventana de entrada
-                        y_true = current_data[-1]
-                        
                         y_pred = model.predict(last_input)
                         y_pred_real = y_pred[0, -1]
                         
                         # Guardar resultados
                         y_pred_list.append(y_pred_real)
-                        y_test_list.append(y_true)
+                        y_val_list.append(y_true)
 
                         if i==5 and data_callback is not None:
-                            data_callback("errores (entrada=predicción, salida=reales)", i, y_pred_list, y_test_list)
+                            data_callback("errores (entrada=predicción, salida=reales)", i, y_pred_list, y_val_list)
 
-                    if y_pred_list and y_test_list:
-                        error_metrics = ErrorMetrics(y_test_list, y_pred_list)
-                        avg_rmse = error_metrics.rmse()
+                    # Calcular error final al terminar el bucle
+                    if y_pred_list and y_val_list:
+                        error_metrics = ErrorMetrics(y_val_list, y_pred_list)
+                        rmse = error_metrics.rmse()
+                        mape = error_metrics.mape()
+                        directional_acc_thr = error_metrics.directional_accuracy_price_thr(eps=100.0)
+                        directional_acc_quantile = error_metrics.directional_accuracy_price_quantile(q=0.8)
 
-                        if avg_rmse < best_score:
-                            best_score = avg_rmse
-                            best_params = {
-                                'buffer': buffer,
-                                'window': window,
-                            }
+                        resultados.append({
+                            'buffer': buffer,
+                            'window': window,
+                            'rmse': rmse,
+                            'mape': mape,
+                            'directional_accuracy_thr': directional_acc_thr,
+                            'directional_accuracy_quantile': directional_acc_quantile,
+                        })
 
                         if verbose:
-                            print(f" Regresión Lineal probada: window={window}, buffer={buffer}, avg_rmse={avg_rmse:.4f}")
+                            print(f"✅ Regresión Lineal finalizada: window={window}, buffer={buffer}, rmse={rmse:.4f}") 
+                            print(f"Tamaño predicción: y_pred_list={len(y_pred_list)}")
                     else:
-                        avg_rmse = float('inf')
-                        print(f"❌ Regresión Lineal sin suficientes puntos: Window {window}, buffer={buffer}, avg_rmse={avg_rmse:.4f}")
+                        print(f"❌ Regresión Lineal sin suficientes puntos: Window {window}, buffer={buffer}")
 
                     completed += 1
-                    progress_callback(completed / total, "Optimizando...")
 
-        print(f'🟢 Mejores parámetros: {best_params}')
+        df = pd.DataFrame(resultados).sort_values('rmse', ascending=True).reset_index(drop=True)
 
-        return best_params
+        return df

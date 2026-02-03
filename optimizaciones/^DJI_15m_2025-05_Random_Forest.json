@@ -1,8 +1,0 @@
-{
-  "buffer": 36,
-  "window": 12,
-  "n_estimators": 400,
-  "max_depth": 5,
-  "min_sample_split": 10,
-  "best_rmse": 104.9672177435581
-}
